@@ -22,3 +22,6 @@ desktop.ini
 .idea/
 .vscode/
 *.swp
+
+# 本地开发/SDD 报告（不入仓）
+.superpowers/
