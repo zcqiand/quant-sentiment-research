@@ -1,0 +1,11 @@
+[project]
+name = "quant-sentiment-research"
+version = "1.0.0"
+requires-python = ">=3.10"
+dependencies = ["langchain>=0.3", "langgraph>=1.2", "pydantic>=2.0", "pandas>=2.0", "pyarrow>=14.0"]
+
+[project.optional-dependencies]
+live = ["akshare"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
