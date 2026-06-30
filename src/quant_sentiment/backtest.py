@@ -1,69 +1,80 @@
-"""金标回测：用历史 K 线评估「预测涨跌」策略的 precision / recall。
+"""金标评估：用人工金标评估 LLM 情绪判定（利好/利空）的 precision / recall。
 
-把策略当成二分类器（1=预测涨，0=预测跌），逐根 K 线回放：
-用 ``closes[:i]`` 让策略出信号，再跟 ``closes[i]`` vs ``closes[i-1]`` 的真实涨跌对齐。
-对「上涨」类计算 precision = TP/(TP+FP)、recall = TP/(TP+FN)。
+把「情绪判定函数」当成分类器，逐条新闻回放：用 ``strategy(news_item)``
+得到 LLM 判定标签（利好 / 利空 / 中性），再跟 ``gold_labels`` 里的人工
+金标对齐。对「利好」类计算 precision = TP/(TP+FP)、recall = TP/(TP+FN)。
+
+注意：本模块评估的是「LLM 情绪判定与人工金标的一致性」，属于研究观察
+质量度量，不预测股价涨跌，也不构成任何交易信号。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, List
+from typing import Callable
 
-from quant_sentiment.gateway import fetch_kline
+from quant_sentiment.gateway import fetch_news
 
 
 @dataclass
 class BacktestResult:
-    """回测结果：precision / recall（针对「上涨」类） + 样本数。"""
+    """评估结果：precision / recall（针对「利好」类） + 样本数。"""
 
     precision: float
     recall: float
     samples: int
 
 
+def _news_key(news_item: dict) -> str:
+    """新闻唯一键：优先 url，缺失时退回 title，与 sentiment 的证据引用对齐。"""
+    return news_item.get("url") or news_item.get("title") or ""
+
+
 def run_backtest(
-    strategy: Callable[[List[float]], int],
+    strategy: Callable[[dict], str],
     symbol: str,
     cache_dir: str,
-    start: str = "",
-    end: str = "",
+    gold_labels: dict[str, str],
 ) -> BacktestResult:
-    """离线回放 ``strategy`` 在 ``symbol`` 历史 K 线上的表现。
+    """逐条回放 ``strategy`` 在 ``symbol`` 新闻列表上的情绪判定质量。
 
     Args:
-        strategy: 输入「截至上一根的收盘价序列」、返回 1(预测涨)/0(预测跌)。
-        symbol:   股票代码，用于定位 ``kline_{symbol}.parquet``。
-        cache_dir: 离线 fixture 目录。
-        start:    保留参数（当前未做日期过滤，留作后续扩展）。
-        end:      保留参数。
+        strategy:     输入一条新闻 dict、返回 LLM 判定标签（利好/利空/中性）。
+        symbol:       股票代码，用于定位 ``news_{symbol}.json``。
+        cache_dir:    离线 fixture 目录。
+        gold_labels:  人工金标，新闻键（url 优先，否则 title）→ 金标标签。
 
     Returns:
-        :class:`BacktestResult`。
+        :class:`BacktestResult`。仅评估在 ``gold_labels`` 中有金标的新闻；
+        无金标的新闻跳过，不计入 samples。
     """
-    df = fetch_kline(symbol, days=300, cache_dir=cache_dir)
-    closes: List[float] = df["close"].tolist()
+    news_list = fetch_news(symbol, cache_dir=cache_dir)
 
     tp = fp = fn = tn = 0
-    # 从 i=1 开始：需要 closes[i-1] 做真实涨跌判断，且至少 1 根历史给策略
-    for i in range(1, len(closes)):
-        signal = strategy(closes[:i])  # 1=预测涨, 0=预测跌
-        actual = 1 if closes[i] > closes[i - 1] else 0
-        if signal == 1 and actual == 1:
+    for news_item in news_list:
+        key = _news_key(news_item)
+        if key not in gold_labels:
+            continue  # 无人工金标，无法评估，跳过
+        signal = strategy(news_item)  # LLM 判定：利好 / 利空 / 中性
+        actual = gold_labels[key]     # 人工金标
+        signal_pos = signal == "利好"
+        actual_pos = actual == "利好"
+        if signal_pos and actual_pos:
             tp += 1
-        elif signal == 1 and actual == 0:
+        elif signal_pos and not actual_pos:
             fp += 1
-        elif signal == 0 and actual == 1:
+        elif not signal_pos and actual_pos:
             fn += 1
         else:
             tn += 1
 
+    samples = tp + fp + fn + tn
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     return BacktestResult(
         precision=precision,
         recall=recall,
-        samples=len(closes) - 1,
+        samples=samples,
     )
 
 
