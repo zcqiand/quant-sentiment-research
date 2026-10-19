@@ -36,3 +36,7 @@ desktop.ini
 
 # 本地开发/SDD 报告（不入仓）
 .superpowers/
+
+# 抓取产物一律不进 git（kline parquet / news json / 缓存）
+data/*
+!data/.gitkeep
