@@ -25,7 +25,7 @@ export default function App() {
         <div className="brand">
           <span className="logo">📈</span>
           <div>
-            <h1>A股盘前工作台</h1>
+            <h1>股票交易个人工作台</h1>
             <span className="sub">舆情 × 技术面 · 研究参考非投资建议</span>
           </div>
         </div>

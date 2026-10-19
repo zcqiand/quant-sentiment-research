@@ -1,10 +1,10 @@
 # quant-sentiment-research — 仓库工作约定（供 Claude Code）
 
-独立项目（不受 suite 门禁）：A 股个人盘前工作台——舆情 + 技术面量化投研（LangGraph）。
+独立项目（不受 suite 门禁）：股票交易个人工作台——A 股舆情 + 技术面量化投研（LangGraph）。
 
 ## 项目定位
 
-**个人自用盘前工作台**：早上开盘前一键扫描自选股，看舆情+技术面+资金热度合成分排序，
+**个人自用股票交易工作台**：早上开盘前一键扫描自选股，看舆情+技术面+资金热度合成分排序，
 点进个股看 K 线/新闻情绪/证据链，用金标回测验证情绪判定质量。输出研究关注度排序，
 **不产出买卖指令**（合规免责保留）。
 
@@ -56,7 +56,7 @@ quant-sentiment-research/
 │   ├── store.py          ← SQLite（watchlist/打分缓存/快照/扫描历史）
 │   ├── workbench.py      ← 工作台编排（快照/合成分/一键扫描）
 │   └── api/app.py        ← FastAPI 路由（health/watchlist/scan/stocks/backtest）
-├── frontend/             ← React 盘前工作台（看板/个股详情/金标回测）
+├── frontend/             ← React 交易工作台前端（看板/个股详情/金标回测）
 ├── scripts/run_api.py    ← 后端启动
 ├── data/                 ← SQLite + 金标文件（gitignore）
 └── tests/

@@ -1,4 +1,4 @@
-# A股盘前工作台（quant-sentiment-research）
+# 股票交易个人工作台（quant-sentiment-research）
 
 A 股舆情 + 技术面量化投研工作台。**早上开盘前一键扫描自选股**：
 舆情 × 技术面 × 资金热度合成分排序 → 点进个股看 K 线/新闻情绪/证据链 →
