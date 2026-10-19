@@ -55,6 +55,7 @@ quant-sentiment-research/
 │   ├── llm.py/llm_live.py← LLM 工厂（env 装配 + FakeLLM 回退 + <think> 剥离）
 │   ├── store.py          ← SQLite（watchlist/打分缓存/快照/扫描历史）
 │   ├── screener.py       ← 价值选股器（白马价值/高股息防守 TOP20，候选池按天缓存）
+│   ├── buy_index.py      ← 买入指数（五步框架：持续性/杠杆/PEG+分位/现金流/行业）
 │   ├── workbench.py      ← 工作台编排（快照/合成分/一键扫描）
 │   └── api/app.py        ← FastAPI 路由（health/watchlist/scan/stocks/screener/backtest）
 ├── frontend/             ← React 交易工作台前端（看板/个股详情/金标回测）
@@ -70,8 +71,14 @@ quant-sentiment-research/
 - **选股器口径**（改动须同步 screener.CALIBER 常量与前端 hint）：白马价值 =
   0<PE(TTM)<20 + ROE(最近年报加权)>15% + 负债率(最近中报)<50% + 连续3年年报OCF>0，
   ROE 降序；高股息防守 = 股息率(近三年年报每股股利均值/现价)>5% + PB<1.5 +
-  PE(TTM)>0 + 连续3年年报OCF>0，股息率降序。候选池行 `data/screen_rows_<日期>.json`
+  PE(TTM)>0 + 连续3年年报OCF>0（最近3个年报），股息率降序。候选池行
+  `data/screen_rows_v2_<日期>.json`（近5年报 ROE/净利/OCF 历史 + 增速）
   按 6h TTL 缓存，东财 datacenter 财务表（push2his 拉黑不受影响）+ 腾讯 qt 批量报价。
+- **买入指数口径**（buy_index.py，改动须同步 WEIGHTS 与前端五维展示）：五维各 0~1
+  权重归一——持续性.25（3~5年ROE均值+最低值，昙花一现压0.2）/ 杠杆.15（负债率）/
+  PEG.15（PE/净利润增速）+ 分位.10（PE近五年分位）/ 现金流.20（OCF/净利润，任一年
+  为负归零）/ 行业.15（EM2016 关键词：强周期.2/中性.6/弱周期1.0）。逐股数据
+  （百度估值历史 + F10 行业）只拉预筛前 60 只：分位按天缓存、行业 30 天缓存。
 - **合规免责**：输出为研究关注度排序，界面与简报保留免责声明，不出现买卖指令。
 - **MiniMax-M3 指纹**：响应内联 `<think>…</think>`，llm_live.strip_think 统一剥离；
   `MINIMAX_MODEL` 若是 image-01 之类图像模型不能用于文本。

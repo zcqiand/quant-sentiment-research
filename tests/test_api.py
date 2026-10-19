@@ -159,3 +159,38 @@ def test_screener_failure_502(tmp_path, monkeypatch):
     resp = client.get("/api/screener/whitehorse")
     assert resp.status_code == 502
     assert "数据源不可用" in resp.json()["detail"]
+
+
+def _buyindex_rows():
+    hist = {"20251231": 20.0, "20241231": 19.0, "20231231": 18.0, "20221231": 21.0, "20211231": 17.0}
+    def row(code, name, **kw):
+        base = {
+            "code": code, "name": name, "price": 20.0, "pe_ttm": 15.0, "pb": 1.2,
+            "mcap_yi": 200.0, "roe": 20.0, "debt_ratio": 35.0, "growth": 25.0,
+            "ocf": {"20251231": 12.0, "20241231": 11.0, "20231231": 10.0},
+            "ocf_hist": {"20251231": 12.0, "20241231": 11.0, "20231231": 10.0},
+            "profit": 10.0, "profit_hist": {"20251231": 10.0, "20241231": 9.0, "20231231": 8.0},
+            "roe_hist": hist,
+            "dps": {"20251231": 0.5, "20241231": 0.5, "20231231": 0.5}, "div_yield": 2.5,
+        }
+        base.update(kw)
+        return base
+
+    return [row("600001", "甲"), row("600002", "乙", roe_hist={k: v - 5 for k, v in hist.items()}, roe=15.0)]
+
+
+def test_screener_buyindex(tmp_path, monkeypatch):
+    from quant_sentiment import buy_index as bi_mod
+    from quant_sentiment import screener
+
+    monkeypatch.setattr(screener, "rows_cached", lambda cache_dir, refresh=False: _buyindex_rows())
+    monkeypatch.setattr(bi_mod, "percentiles_cached", lambda codes, cache_dir: {c: 40.0 for c in codes})
+    monkeypatch.setattr(bi_mod, "industry_cached", lambda pairs, cache_dir: {c: "食品饮料-白酒" for c, _ in pairs})
+    client = _client(tmp_path)
+
+    body = client.get("/api/screener/buyindex").json()
+    assert body["kind"] == "buyindex"
+    assert body["count"] == 2
+    assert 0 < body["items"][0]["buy_index"] <= 100
+    assert body["items"][0]["label"]
+    assert set(body["items"][0]["dims"]) == {"roe", "debt", "peg", "percentile", "cash", "industry"}

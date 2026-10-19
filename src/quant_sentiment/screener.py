@@ -44,6 +44,13 @@ def report_periods() -> tuple[str, str, str, str]:
     return f"{annual}1231", f"{annual - 1}1231", f"{annual - 2}1231", f"{interim_year}0630"
 
 
+def report_hist_periods(n: int = 5) -> list[str]:
+    """近 n 个完整年报报告期（近→远），买入指数的 3~5 年持续性分析用。"""
+    annual, _y2, _y3, _interim = report_periods()
+    y = int(annual[:4])
+    return [f"{y - i}1231" for i in range(n)]
+
+
 def period_keys() -> tuple[str, str, str]:
     """ocf/dps 字典键（最近年报, 前一年, 前两年）。"""
     annual, y2, y3, _ = report_periods()
@@ -122,34 +129,40 @@ def _col(df, keywords: tuple[str, ...] | str, exclude: tuple[str, ...] = ()) -> 
 
 def build_rows(
     quotes: dict[str, dict],
-    yjbb,
+    yjbb_hist: dict[str, "object"],
     zcfz,
-    xjll_by_period: dict[str, "object"],
+    xjll_hist: dict[str, "object"],
     fhps_by_period: dict[str, "object"],
 ) -> list[dict]:
     """财务表 × 行情快照 → 候选池行（纯函数，可测）。
 
-    yjbb/zcfz/xjll/fhps 均为 pandas DataFrame（东财批量表），入参形状见 fetch 层。
+    yjbb_hist/xjll_hist 为 {报告期: DataFrame}（近5个年报，近→远），
+    fhps 为 {报告期: DataFrame}（近3个年报），形状见 fetch 层。
+    行内历史键均按近→远排列。
     """
-    annual, y2, y3, _interim = report_periods()
-    roe_col = _col(yjbb, "净资产收益率", exclude=("扣非",))
-    profit_col = _col(yjbb, "净利润", exclude=("增长", "环比", "扣非"))
+    periods = list(yjbb_hist.keys())
+    annual = periods[0]
+    latest_yjbb = yjbb_hist[annual]
+    roe_col = _col(latest_yjbb, "净资产收益率", exclude=("扣非",))
+    profit_col = _col(latest_yjbb, "净利润", exclude=("增长", "环比", "扣非"))
+    growth_col = _col(latest_yjbb, "同比增长")
     ocf_cols = {
         p: _col(df, ("经营活动产生的现金流量净额", "经营性现金流-现金流量净额"))
-        for p, df in xjll_by_period.items()
+        for p, df in xjll_hist.items()
     }
     dps_col = _col(fhps_by_period[annual], "现金分红比例")
 
-    roe_map = dict(zip(yjbb["股票代码"], yjbb[roe_col]))
-    profit_map = dict(zip(yjbb["股票代码"], yjbb[profit_col]))
+    roe_maps = {p: dict(zip(df["股票代码"], df[roe_col])) for p, df in yjbb_hist.items()}
+    profit_maps = {p: dict(zip(df["股票代码"], df[profit_col])) for p, df in yjbb_hist.items()}
+    growth_map = dict(zip(latest_yjbb["股票代码"], latest_yjbb[growth_col]))
     debt_map = {
         str(code): round(float(ratio), 2)
         for code, ratio in zip(zcfz["股票代码"], zcfz[_col(zcfz, "资产负债率")])
         if ratio and float(ratio) == float(ratio)
     }
     ocf_maps = {
-        p: dict(zip(xjll_by_period[p]["股票代码"], xjll_by_period[p][ocf_cols[p]]))
-        for p in xjll_by_period
+        p: dict(zip(xjll_hist[p]["股票代码"], xjll_hist[p][ocf_cols[p]]))
+        for p in xjll_hist
     }
     dps_maps: dict[str, dict] = {}
     for p, df in fhps_by_period.items():
@@ -157,15 +170,24 @@ def build_rows(
         per_share = implemented[dps_col] / 10.0  # 每10股派息 → 每股股利
         dps_maps[p] = dict(zip(implemented["代码"], per_share))
 
+    def _num(v) -> float | None:
+        try:
+            f = float(v)
+            return None if f != f else f
+        except (TypeError, ValueError):
+            return None
+
     rows: list[dict] = []
-    keys = (annual, y2, y3)
+    dps_keys = list(fhps_by_period.keys())
     for code, q in quotes.items():
         if "ST" in q["name"].upper():
             continue
-        ocf = {p: ocf_maps.get(p, {}).get(code) for p in keys}
-        dps = {p: dps_maps.get(p, {}).get(code) for p in keys}
-        if any(v is None or float(v) != float(v) for v in list(ocf.values()) + list(dps.values())):
-            continue  # 财务数据不全的不进池
+        ocf_hist = {p: _num(ocf_maps.get(p, {}).get(code)) for p in periods}
+        profit_hist = {p: _num(profit_maps.get(p, {}).get(code)) for p in periods}
+        roe_hist = {p: _num(roe_maps.get(p, {}).get(code)) for p in periods}
+        dps = {p: _num(dps_maps.get(p, {}).get(code)) for p in dps_keys}
+        if any(v is None for v in list(ocf_hist.values()) + list(dps.values())):
+            continue  # 现金流/分红数据不全的不进池
         div_yield = round(sum(float(d) for d in dps.values()) / 3 / q["price"] * 100, 2) if q["price"] else 0.0
         rows.append(
             {
@@ -175,11 +197,15 @@ def build_rows(
                 "pe_ttm": q["pe_ttm"],
                 "pb": q["pb"],
                 "mcap_yi": q["mcap_yi"],
-                "roe": round(float(roe_map.get(code, 0) or 0), 2),
+                "roe": round(roe_hist[annual] or 0, 2),
                 "debt_ratio": debt_map.get(code),
-                "ocf": {p: round(float(v), 2) for p, v in ocf.items()},
-                "profit": round(float(profit_map.get(code, 0) or 0), 2),
-                "dps": {p: round(float(v), 4) for p, v in dps.items()},
+                "ocf": {p: round(v, 2) for p, v in ocf_hist.items()},
+                "ocf_hist": {p: round(v, 2) for p, v in ocf_hist.items()},
+                "profit": round(profit_hist[annual] or 0, 2),
+                "profit_hist": {p: round(v, 2) for p, v in profit_hist.items()},
+                "roe_hist": {p: round(v, 2) for p, v in roe_hist.items()},
+                "growth": (round(g, 2) if (g := _num(growth_map.get(code))) is not None else None),
+                "dps": {p: round(v, 4) for p, v in dps.items()},
                 "div_yield": div_yield,
             }
         )
@@ -187,26 +213,31 @@ def build_rows(
 
 
 def fetch_rows() -> list[dict]:
-    """在线拉全量候选池行：东财财务四表 + 腾讯批量报价（约 1 分钟）。"""
+    """在线拉全量候选池行（v2：近5年报 ROE/净利/OCF 历史 + 最新增速）。
+
+    东财批量表 11 张（yjbb×5 + xjll×5 + zcfz）+ 分红表 3 张 + 腾讯批量报价，约 2 分钟。
+    """
     import akshare as ak
 
-    annual, y2, y3, interim = report_periods()
-    yjbb = ak.stock_yjbb_em(date=annual)
+    _annual, _y2, _y3, interim = report_periods()
+    hist = report_hist_periods()
+    dps_periods = hist[:3]
+    yjbb_hist = {p: ak.stock_yjbb_em(date=p) for p in hist}
     zcfz = ak.stock_zcfz_em(date=interim)
-    xjll = {p: ak.stock_xjll_em(date=p) for p in (annual, y2, y3)}
-    fhps = {p: ak.stock_fhps_em(date=p) for p in (annual, y2, y3)}
+    xjll_hist = {p: ak.stock_xjll_em(date=p) for p in hist}
+    fhps = {p: ak.stock_fhps_em(date=p) for p in dps_periods}
 
     codes = sorted({str(c) for c in zcfz["股票代码"]})
     quotes = fetch_quotes(codes)
-    return build_rows(quotes, yjbb, zcfz, xjll, fhps)
+    return build_rows(quotes, yjbb_hist, zcfz, xjll_hist, fhps)
 
 
 def rows_cached(cache_dir: str | None, refresh: bool = False) -> list[dict]:
-    """候选池行按天缓存（TTL 6h）；refresh=True 或无缓存时在线拉取。"""
+    """候选池行按天缓存（v2 schema，TTL 6h）；refresh=True 或无缓存时在线拉取。"""
     if cache_dir:
         path = Path(cache_dir)
         path.mkdir(parents=True, exist_ok=True)
-        cache_file = path / f"screen_rows_{date.today().isoformat()}.json"
+        cache_file = path / f"screen_rows_v2_{date.today().isoformat()}.json"
         if not refresh and cache_file.exists():
             age = time.time() - cache_file.stat().st_mtime
             if age < _ROWS_TTL_SECONDS:
@@ -219,8 +250,10 @@ def rows_cached(cache_dir: str | None, refresh: bool = False) -> list[dict]:
 
 # ---- 筛选（纯函数）----
 
-def _ocf_positive_all(row: dict) -> bool:
-    return all(isinstance(v, (int, float)) and v > 0 for v in row["ocf"].values())
+def _ocf_recent3_positive(row: dict) -> bool:
+    """连续 3 年（最近 3 个年报）经营现金流净额为正。"""
+    vals = list(row["ocf"].values())[:3]
+    return all(isinstance(v, (int, float)) and v > 0 for v in vals)
 
 
 def screen_white_horse(rows: list[dict], top: int = 20) -> list[dict]:
@@ -232,7 +265,7 @@ def screen_white_horse(rows: list[dict], top: int = 20) -> list[dict]:
         and 0 < r["pe_ttm"] < 20
         and r["roe"] > 15
         and r["debt_ratio"] < 50
-        and _ocf_positive_all(r)
+        and _ocf_recent3_positive(r)
         and "ST" not in r["name"].upper()
     ]
     picked.sort(key=lambda r: r["roe"], reverse=True)
@@ -250,7 +283,7 @@ def screen_dividend(rows: list[dict], top: int = 20) -> list[dict]:
         if r["div_yield"] > 5
         and 0 < r["pb"] < 1.5
         and r["pe_ttm"] > 0
-        and _ocf_positive_all(r)
+        and _ocf_recent3_positive(r)
         and "ST" not in r["name"].upper()
     ]
     picked.sort(key=lambda r: r["div_yield"], reverse=True)

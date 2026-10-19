@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from .. import buy_index as buy_index_module
 from .. import screener as screener_module
 from ..gateway import _offline_active, fetch_kline, fetch_news
 from ..backtest import run_backtest
@@ -175,9 +176,13 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
 
     @app.get("/api/screener/{kind}")
     def screener(kind: str, refresh: bool = False):
-        """选股器：whitehorse（白马价值）/ dividend（高股息防守）。"""
+        """选股器：whitehorse（白马价值）/ dividend（高股息）/ buyindex（买入指数）。"""
+        data_dir = wb.cache_dir or str(_DATA_DIR)
         try:
-            return screener_module.run_screen(kind, wb.cache_dir or str(_DATA_DIR), refresh)
+            if kind == "buyindex":
+                rows = screener_module.rows_cached(data_dir, refresh)
+                return buy_index_module.run_buy_index(rows, data_dir)
+            return screener_module.run_screen(kind, data_dir, refresh)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - 数据源抖动统一 502

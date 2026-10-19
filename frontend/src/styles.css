@@ -129,3 +129,20 @@ input {
   .detail-grid { grid-template-columns: 1fr; }
   .scan-table { display: block; overflow-x: auto; }
 }
+
+/* 买入指数五维分项条 */
+.dim-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  margin-left: 8px;
+  font-style: normal;
+}
+.dim-strip em {
+  font-style: normal;
+  font-size: 10px;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+.dim-strip em.up { opacity: 1; color: #1db460; }
+.dim-strip em.down { opacity: 1; color: #e24242; }
