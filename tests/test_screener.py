@@ -6,6 +6,7 @@ import quant_sentiment.screener as scr
 def _row(code, name, price, pe_ttm, pb, roe, debt_ratio, ocf3, profit, dps3):
     """构造一行候选股数据；ocf3/dps3 为 (最近年报, 前一年, 前两年) 元组。"""
     div_yield = round(sum(dps3) / 3 / price * 100, 2) if price else 0.0
+    div_yield_latest = round(dps3[0] / price * 100, 2) if price else 0.0
     return {
         "code": code,
         "name": name,
@@ -19,6 +20,7 @@ def _row(code, name, price, pe_ttm, pb, roe, debt_ratio, ocf3, profit, dps3):
         "profit": profit,
         "dps": dict(zip(scr.period_keys(), dps3)),
         "div_yield": div_yield,
+        "div_yield_latest": div_yield_latest,
     }
 
 
@@ -70,6 +72,17 @@ def test_screen_dividend_filters_and_ranks():
     out = scr.screen_dividend(rows, top=10)
     assert [r["code"] for r in out] == ["000002", "000001"]  # 股息率降序
     assert out[0]["div_yield"] == 8.75
+    assert out[0]["div_yield_latest"] == 8.75  # 最新股息率列（双列口径）
+
+
+def test_screen_dividend_excludes_collapsing_dividend():
+    """分红崩塌股（均值幻觉）：均值股息率高但最新年度分红 < 均值 70%，必须剔除。"""
+    collapsing = _row("000937", "周期顶", 4.5, 33.0, 0.9, 10.0, 50.0, (5, 4, 3), 6.0, (0.1, 0.6, 0.6))
+    assert collapsing["div_yield"] > 8  # 均值口径下它进得了旧榜单前排放着……
+    rising = _row("601717", "分红上行", 13.8, 7.0, 1.0, 15.0, 45.0, (5, 4, 3), 6.0, (1.25, 1.12, 0.84))
+    out = scr.screen_dividend([collapsing, rising], top=10)
+    assert [r["code"] for r in out] == ["601717"]  # 崩塌的挡掉，上行的留下
+    assert out[0]["div_yield_latest"] > out[0]["div_yield"]  # 上行股最新股息率更高
 
 
 # ---- 腾讯批量报价解析 ----

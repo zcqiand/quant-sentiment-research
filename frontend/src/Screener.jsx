@@ -99,7 +99,8 @@ export default function Screener({ onOpenStock }) {
             ) : (
               <>
                 <th>PB</th>
-                {isDiv ? <th>股息率%</th> : <th>ROE%</th>}
+                {isDiv ? <th title="近三年年报每股股利均值/现价">均值股息率%</th> : <th>ROE%</th>}
+                {isDiv ? <th title="最新年度每股股利/现价">最新股息率%</th> : null}
                 {isDiv ? null : <th>负债率%</th>}
                 <th>3年OCF(亿)</th>
                 <th>市值(亿)</th>
@@ -144,6 +145,11 @@ export default function Screener({ onOpenStock }) {
                 <>
                   <td>{r.pb?.toFixed(2)}</td>
                   {isDiv ? <td className="up">{r.div_yield?.toFixed(2)}</td> : <td className="up">{r.roe?.toFixed(2)}</td>}
+                  {isDiv ? (
+                    <td className={r.div_yield_latest >= r.div_yield ? 'up' : 'down'} title={r.div_yield_latest < r.div_yield ? '分红在降，小心均值幻觉' : '分红在涨'}>
+                      {r.div_yield_latest?.toFixed(2)}
+                    </td>
+                  ) : null}
                   {isDiv ? null : <td>{r.debt_ratio?.toFixed(1)}</td>}
                   <td>{ocfSumYi(r).toFixed(1)}</td>
                   <td>{r.mcap_yi?.toFixed(0)}</td>

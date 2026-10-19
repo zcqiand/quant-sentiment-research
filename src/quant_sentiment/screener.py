@@ -4,9 +4,11 @@
 
 - **白马价值**：0 < PE(TTM) < 20 · ROE(最近披露完整年报·加权) > 15%
   · 资产负债率(最近中报) < 50% · 连续三个年报经营现金流净额 > 0，按 ROE 降序取 TOP。
-- **高股息防守**：股息率(近三年年报每股股利均值/现价) > 5% · PB < 1.5 · PE(TTM) > 0
-  （盈利为正，亏钱派息不是防守）· 现金流充足 = 连续三个年报经营现金流净额 > 0
-  （近三年累计为正），按股息率降序取 TOP。
+- **高股息防守**：股息率(近三年年报每股股利均值/现价) > 5% · 分红不塌
+  （最新年度每股股利 ≥ 三年均值的 70%，剔除周期顶均值幻觉与一次性特别分红）
+  · PB < 1.5 · PE(TTM) > 0（盈利为正，亏钱派息不是防守）· 现金流充足 =
+  连续三个年报经营现金流净额 > 0（近三年累计为正），按均值股息率降序取 TOP。
+  行内同时给出 `div_yield_latest`（最新年度股息率）供双列对照。
 
 数据源：财务三表+分红表走东财 datacenter 批量接口（整表一次拉取），
 行情（现价/PE-TTM/PB/市值）走腾讯 qt.gtimg.cn 批量报价（push2his 拉黑期的
@@ -27,7 +29,7 @@ _QUOTE_BATCH = 50
 _ROWS_TTL_SECONDS = 6 * 3600  # 候选池行缓存半日，refresh=True 强制重拉
 
 WHITEHORSE_CALIBER = "0<PE(TTM)<20 · ROE(最近年报加权)>15% · 资产负债率(最近中报)<50% · 连续3年年报经营现金流>0 · 按 ROE 降序"
-DIVIDEND_CALIBER = "股息率(近三年年报每股股利均值/现价)>5% · PB<1.5 · PE(TTM)>0 · 连续3年年报经营现金流>0 · 按股息率降序"
+DIVIDEND_CALIBER = "股息率(近三年年报每股股利均值/现价)>5% · 最新年度分红≥三年均值70%(剔除分红崩塌/一次性特别分红) · PB<1.5 · PE(TTM)>0 · 连续3年年报经营现金流>0 · 按均值股息率降序"
 
 
 # ---- 报告期 ----
@@ -189,6 +191,7 @@ def build_rows(
         if any(v is None for v in list(ocf_hist.values()) + list(dps.values())):
             continue  # 现金流/分红数据不全的不进池
         div_yield = round(sum(float(d) for d in dps.values()) / 3 / q["price"] * 100, 2) if q["price"] else 0.0
+        div_yield_latest = round(float(dps[dps_keys[0]]) / q["price"] * 100, 2) if q["price"] else 0.0
         rows.append(
             {
                 "code": code,
@@ -207,6 +210,7 @@ def build_rows(
                 "growth": (round(g, 2) if (g := _num(growth_map.get(code))) is not None else None),
                 "dps": {p: round(v, 4) for p, v in dps.items()},
                 "div_yield": div_yield,
+                "div_yield_latest": div_yield_latest,
             }
         )
     return rows
@@ -276,11 +280,24 @@ def screen_white_horse(rows: list[dict], top: int = 20) -> list[dict]:
 
 
 def screen_dividend(rows: list[dict], top: int = 20) -> list[dict]:
-    """高股息防守 TOP：股息率>5% + 破净/低PB + 盈利为正 + 连续三年现金流为正，股息率降序。"""
+    """高股息防守 TOP：均值股息率>5% + 分红不塌（最新年度 ≥ 均值 70%，防周期顶
+    均值幻觉与一次性特别分红）+ 破净/低PB + 盈利为正 + 连续三年现金流为正。"""
+    # 旧 schema 缓存行没有 div_yield_latest，从 dps 现算回填
+    for r in rows:
+        if "div_yield_latest" not in r and r.get("price"):
+            dps_latest = next(iter(r.get("dps", {}).values()), 0.0)
+            r["div_yield_latest"] = round(float(dps_latest) / r["price"] * 100, 2)
+
+    def _div_not_collapsed(r: dict) -> bool:
+        vals = list(r["dps"].values())[:3]
+        mean_dps = sum(float(v) for v in vals) / 3
+        return mean_dps > 0 and float(vals[0]) >= 0.7 * mean_dps
+
     picked = [
         r
         for r in rows
         if r["div_yield"] > 5
+        and _div_not_collapsed(r)
         and 0 < r["pb"] < 1.5
         and r["pe_ttm"] > 0
         and _ocf_recent3_positive(r)
