@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from .gateway import fetch_kline, fetch_news
+from .gateway import fetch_kline, fetch_news, fetch_stock_name
 from .grounding import attach_evidence
 from .indicators import ma, rsi, technical_score
 from .llm import FakeLLM, make_llm
@@ -78,8 +78,22 @@ class Workbench:
 
     # ---- 自选股 ----
 
-    def add_stock(self, symbol: str, name: str = "") -> None:
+    def add_stock(self, symbol: str, name: str = "") -> str:
+        """加自选；名称缺省时自动查股名（腾讯行情源）并落库。"""
+        if not name:
+            name = fetch_stock_name(symbol)
         self.store.upsert_watchlist(symbol, name)
+        return name
+
+    def _watchlist_name(self, symbol: str) -> str:
+        """取自选股名；为空时自动补查并持久化（新闻检索质量依赖中文名）。"""
+        row = next((r for r in self.list_watchlist() if r["symbol"] == symbol), None)
+        name = row["name"] if row else ""
+        if not name:
+            name = fetch_stock_name(symbol)
+            if name:
+                self.store.upsert_watchlist(symbol, name)
+        return name
 
     def remove_stock(self, symbol: str) -> bool:
         return self.store.remove_watchlist(symbol)
@@ -105,9 +119,9 @@ class Workbench:
         eastmoney 搜索按关键词文本匹配，6 位数字代码会命中任何含该数字的
         文章（如「回购股份600000股」），中文股名检索才准。
         """
-        row = next((r for r in self.list_watchlist() if r["symbol"] == symbol), None)
-        if row and row.get("name") and _has_cjk(row["name"]):
-            return row["name"]
+        name = self._watchlist_name(symbol)
+        if name and _has_cjk(name):
+            return name
         return None
 
     # ---- 研究快照 ----
@@ -119,6 +133,8 @@ class Workbench:
         快照照常产出——单源抖动不废整只研究。
         """
         news = _dedupe_news(fetch_news(symbol, cache_dir=self.cache_dir, query=self.news_query(symbol)))
+        # 显式排序：发布时间倒序（最新在前），缺时间的沉底
+        news = sorted(news, key=lambda n: str(n.get("ts") or ""), reverse=True)
 
         kline = None
         price = change_pct = None
@@ -200,9 +216,7 @@ class Workbench:
 
         snapshot = {
             "symbol": symbol,
-            "name": next(
-                (r["name"] for r in self.list_watchlist() if r["symbol"] == symbol), ""
-            ),
+            "name": self._watchlist_name(symbol),
             "ts": ts,
             "price": price,
             "change_pct": round(change_pct, 2) if change_pct is not None else None,

@@ -84,8 +84,8 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
     def add_watchlist(item: WatchlistItem):
         if not _SYMBOL_RE.match(item.symbol):
             raise HTTPException(status_code=400, detail="股票代码须为 6 位数字")
-        wb.add_stock(item.symbol, item.name)
-        return {"symbol": item.symbol, "name": item.name}
+        name = wb.add_stock(item.symbol, item.name)
+        return {"symbol": item.symbol, "name": name}
 
     @app.delete("/api/watchlist/{symbol}", status_code=204)
     def remove_watchlist(symbol: str):
@@ -110,7 +110,11 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
         fetch_errors = []
         for fetcher in (
             lambda: fetch_kline(symbol, days=60, cache_dir=wb.cache_dir),
-            lambda: _dedupe_news(fetch_news(symbol, cache_dir=wb.cache_dir, query=wb.news_query(symbol))),
+            lambda: sorted(
+                _dedupe_news(fetch_news(symbol, cache_dir=wb.cache_dir, query=wb.news_query(symbol))),
+                key=lambda n: str(n.get("ts") or ""),
+                reverse=True,
+            ),  # 发布时间倒序，缺时间沉底
         ):
             try:
                 result = fetcher()
@@ -154,7 +158,7 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
             }
         return {
             "symbol": symbol,
-            "name": next((r["name"] for r in wb.list_watchlist() if r["symbol"] == symbol), ""),
+            "name": wb._watchlist_name(symbol),
             "kline": kline.to_dict(orient="records") if kline is not None else None,
             "indicators": indicators,
             "news": news_out,

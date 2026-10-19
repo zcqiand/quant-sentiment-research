@@ -29,3 +29,26 @@ def test_fetch_news_offline_from_cache(tmp_path):
     news = fetch_news("600000", cache_dir=str(tmp_path))
     assert len(news) == 1
     assert news[0]["title"] == "利好"
+
+
+def test_fetch_stock_name_parses_gbk_response():
+    import httpx
+
+    from quant_sentiment.gateway import fetch_stock_name
+
+    body = 'v_sh600000="1~浦发银行~600000~9.78~9.70~9.79~9.65~1000~10000~";'.encode("gbk")
+    llm_transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    assert fetch_stock_name("600000", transport=llm_transport) == "浦发银行"
+
+
+def test_fetch_stock_name_failure_returns_empty():
+    import httpx
+
+    from quant_sentiment.gateway import fetch_stock_name
+
+    def boom(request):
+        raise httpx.ConnectError("down")
+
+    transport = httpx.MockTransport(boom)
+    assert fetch_stock_name("600000", transport=transport) == ""
+    assert fetch_stock_name("abc", transport=transport) == ""  # 非法代码直接空

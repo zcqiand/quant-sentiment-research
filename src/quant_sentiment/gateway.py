@@ -49,6 +49,37 @@ def _news_cache_path(cache_dir: str, symbol: str) -> str:
     return os.path.join(cache_dir, f"news_{symbol}.json")
 
 
+_TENCENT_EXCHANGE_PREFIX = {"6": "sh", "0": "sz", "3": "sz", "4": "bj", "8": "bj", "9": "sh"}
+
+
+def fetch_stock_name(symbol: str, transport=None) -> str:
+    """查股票名称（腾讯行情接口 qt.gtimg.cn，GBK 编码）。
+
+    - host 与 eastmoney 独立，K 线主源被限流时仍可用；
+    - 直连不走代理（``trust_env=False``，本机代理对行情源不可靠）；
+    - 任何失败返回空串不抛——名称是增强信息，不值得让流程失败。
+    """
+    import httpx
+
+    prefix = _TENCENT_EXCHANGE_PREFIX.get(symbol[:1])
+    if not prefix:
+        return ""
+    try:
+        with httpx.Client(transport=transport, trust_env=transport is None) as client:
+            resp = client.get(f"https://qt.gtimg.cn/q={prefix}{symbol}", timeout=10.0)
+        resp.raise_for_status()
+        text = resp.content.decode("gbk", errors="replace")
+        for part in text.split(";"):
+            segment = part.strip()
+            if segment.startswith(f"v_{prefix}{symbol}="):
+                fields = segment.split('"')[1].split("~")
+                # 腾讯源名称常带装饰空格（如「五 粮 液」），统一去掉
+                return fields[1].replace(" ", "") if len(fields) > 1 else ""
+        return ""
+    except Exception:  # noqa: BLE001 - 名称查不到就空着，流程继续
+        return ""
+
+
 _KLINE_OUT_COLS = ["date", "open", "close", "high", "low", "volume"]
 
 
@@ -194,4 +225,4 @@ _KLINE_COL_MAP = {
 }
 
 
-__all__ = ["set_offline", "fetch_kline", "fetch_news"]
+__all__ = ["set_offline", "fetch_kline", "fetch_news", "fetch_stock_name"]
