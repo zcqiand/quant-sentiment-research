@@ -94,6 +94,9 @@ input {
 .lab-neutral { background: #8b949e22; color: var(--muted); }
 .lab-warn { background: #4a90e226; color: var(--accent); }
 .lab-bad { background: #1db46022; color: var(--down); }
+.lab-unscored { background: #8b949e18; color: var(--muted); font-style: italic; }
+
+.score-btn { margin-left: 10px; font-size: 12px; padding: 4px 10px; }
 
 .hint { color: var(--muted); font-size: 12px; }
 .foot { color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); margin-top: 32px; padding: 14px 0 24px; }

@@ -21,6 +21,7 @@ export const api = {
   scan: () => req('/api/scan', { method: 'POST' }),
   latestScan: () => req('/api/scan/latest'),
   stockDetail: (symbol) => req(`/api/stocks/${symbol}`),
+  scoreNews: (symbol) => req(`/api/stocks/${symbol}/score-news`, { method: 'POST' }),
   research: (symbol) => req(`/api/stocks/${symbol}/research`, { method: 'POST' }),
   backtest: (symbol) => req(`/api/backtest/${symbol}`),
   screener: (kind, refresh = false) =>

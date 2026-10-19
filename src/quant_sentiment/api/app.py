@@ -21,7 +21,7 @@ from ..gateway import _offline_active, fetch_kline, fetch_news
 from ..backtest import run_backtest
 from ..llm import FakeLLM
 from ..llm_live import AnthropicLLM, OpenAICompatLLM
-from ..workbench import Workbench, _dedupe_news
+from ..workbench import Workbench, _dedupe_news, _news_key
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DATA_DIR = _REPO_ROOT / "data"
@@ -59,6 +59,18 @@ def _gold_dir() -> str:
     return str(_DATA_DIR)
 
 
+def _news_item(item: dict, s: dict | None) -> dict:
+    """新闻 → 响应条目；s 为 None 表示未打分（label/confidence 置 null）。"""
+    return {
+        "title": item.get("title", ""),
+        "content": item.get("content", ""),
+        "url": item.get("url", ""),
+        "ts": item.get("ts", ""),
+        "label": s["label"] if s else None,
+        "confidence": s["confidence"] if s else None,
+    }
+
+
 def create_app(workbench: Workbench | None = None) -> FastAPI:
     wb = workbench if workbench is not None else _default_workbench()
     app = FastAPI(title="quant-sentiment-workbench", version="2.0.0")
@@ -68,6 +80,11 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    def _fetch_sorted_news(symbol: str) -> list[dict]:
+        """去重 + 发布时间倒序（最新在前，缺时间沉底）的新闻列表。"""
+        news = _dedupe_news(fetch_news(symbol, cache_dir=wb.cache_dir, query=wb.news_query(symbol)))
+        return sorted(news, key=lambda n: str(n.get("ts") or ""), reverse=True)
 
     @app.get("/api/health")
     def health():
@@ -107,16 +124,16 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
 
     @app.get("/api/stocks/{symbol}")
     def stock_detail(symbol: str):
+        """个股详情：K 线 + 新闻 + **已缓存**的打分标签——不做 LLM 调用，秒开。
+
+        打分由 POST /api/stocks/{symbol}/score-news 按钮显式触发。
+        """
         kline = None
         news = []
         fetch_errors = []
         for fetcher in (
             lambda: fetch_kline(symbol, days=60, cache_dir=wb.cache_dir),
-            lambda: sorted(
-                _dedupe_news(fetch_news(symbol, cache_dir=wb.cache_dir, query=wb.news_query(symbol))),
-                key=lambda n: str(n.get("ts") or ""),
-                reverse=True,
-            ),  # 发布时间倒序，缺时间沉底
+            lambda: _fetch_sorted_news(symbol),
         ):
             try:
                 result = fetcher()
@@ -132,18 +149,7 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
         closes = [float(x) for x in kline["close"].tolist()] if kline is not None else []
         from ..indicators import ma, macd, rsi, technical_score
 
-        scored = wb.score_news_batch(news, symbol)
-        news_out = [
-            {
-                "title": item.get("title", ""),
-                "content": item.get("content", ""),
-                "url": item.get("url", ""),
-                "ts": item.get("ts", ""),
-                "label": s["label"],
-                "confidence": s["confidence"],
-            }
-            for item, s in zip(news, scored)
-        ]
+        news_out = [_news_item(item, wb.store.get_news_score(_news_key(item))) for item in news]
         indicators = None
         if closes:
             macd_full = macd(closes)
@@ -166,6 +172,16 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
             "news": news_out,
             "latest": wb.store.latest_run_per_symbol().get(symbol),
         }
+
+    @app.post("/api/stocks/{symbol}/score-news")
+    def score_news(symbol: str):
+        """按钮触发：并行给未打分新闻跑 LLM（已打分的走缓存零消费），返回全量标签。"""
+        try:
+            news = _fetch_sorted_news(symbol)
+        except Exception as exc:  # noqa: BLE001 - 数据源抖动统一 502
+            raise HTTPException(status_code=502, detail=f"新闻获取失败：{exc}") from exc
+        scored = wb.score_news_batch(news, symbol)
+        return {"symbol": symbol, "news": [_news_item(item, s) for item, s in zip(news, scored)]}
 
     @app.post("/api/stocks/{symbol}/research")
     def stock_research(symbol: str):

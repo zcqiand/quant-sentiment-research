@@ -8,11 +8,24 @@ export default function StockDetail({ symbol, onBack }) {
   const [detail, setDetail] = useState(null)
   const [err, setErr] = useState(null)
   const [researching, setResearching] = useState(false)
+  const [scoring, setScoring] = useState(false)
 
   const load = () => {
     api.stockDetail(symbol).then(setDetail).catch((e) => setErr(e.message))
   }
   useEffect(load, [symbol])
+
+  const doScoreNews = async () => {
+    setScoring(true)
+    try {
+      const resp = await api.scoreNews(symbol)
+      setDetail((d) => ({ ...d, news: resp.news }))
+    } catch (e) {
+      setErr(e.message)
+    } finally {
+      setScoring(false)
+    }
+  }
 
   const doResearch = async () => {
     setResearching(true)
@@ -34,10 +47,11 @@ export default function StockDetail({ symbol, onBack }) {
       </div>
     )
   }
-  if (!detail) return <div className="detail">加载中…（首次研究该股需并行给新闻打分，约十几秒；再点就是缓存秒开）</div>
+  if (!detail) return <div className="detail">加载中…</div>
 
   const ind = detail.indicators || {}
   const latest = detail.latest
+  const unscored = (detail.news || []).filter((n) => !n.label).length
 
   return (
     <div className="detail">
@@ -92,14 +106,25 @@ export default function StockDetail({ symbol, onBack }) {
         </section>
 
         <section className="panel">
-          <h3>新闻舆情（{detail.news.length}）</h3>
+          <h3>
+            新闻舆情（{detail.news.length}）
+            {unscored > 0 && (
+              <button className="score-btn" onClick={doScoreNews} disabled={scoring}>
+                {scoring ? '⚡ AI 打分中…（约十几秒）' : `⚡ AI 情绪打分（${unscored} 条待打分）`}
+              </button>
+            )}
+          </h3>
           <ul className="news">
             {detail.news.map((n, i) => (
               <li key={i}>
-                <span className={`lab ${LABEL_CLASS[n.label] || 'lab-neutral'}`}>{n.label}</span>
+                {n.label ? (
+                  <span className={`lab ${LABEL_CLASS[n.label] || 'lab-neutral'}`}>{n.label}</span>
+                ) : (
+                  <span className="lab lab-unscored">未打分</span>
+                )}
                 <div>
                   <a href={n.url} target="_blank" rel="noreferrer">{n.title}</a>
-                  <small>{n.ts} · 置信度 {n.confidence}</small>
+                  <small>{n.ts}{n.label ? ` · 置信度 ${n.confidence}` : ''}</small>
                 </div>
               </li>
             ))}

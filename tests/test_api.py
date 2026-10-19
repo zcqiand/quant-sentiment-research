@@ -90,8 +90,37 @@ def test_stock_detail(tmp_path):
     assert len(body["kline"]) == 30
     assert body["kline"][-1]["close"] == pytest.approx(12.9)
     assert "ma5" in body["indicators"]
-    assert body["news"][0]["label"] == "利好"
+    assert body["news"][0]["label"] is None  # 详情不做 LLM 打分，秒开
     assert client.post("/api/stocks/600000/research").status_code == 200
+
+
+def test_news_scoring_button_triggered(tmp_path):
+    """打分由按钮（POST score-news）触发；打过的进缓存，二次触发零 LLM 消费。"""
+    from quant_sentiment.api.app import create_app
+    from quant_sentiment.llm import FakeLLM
+    from quant_sentiment.workbench import Workbench
+
+    _fixtures(tmp_path)
+    wb = Workbench(
+        db_path=str(tmp_path / "wb.db"),
+        cache_dir=str(tmp_path),
+        llm=FakeLLM(script=['{"label":"利好","confidence":0.9}']),
+    )
+    wb.add_stock("600000", "浦发银行")
+    client = TestClient(create_app(workbench=wb))
+
+    body = client.get("/api/stocks/600000").json()
+    assert body["news"][0]["label"] is None
+    assert wb.llm._cursor == 0  # 详情零 LLM 消费
+
+    scored = client.post("/api/stocks/600000/score-news")
+    assert scored.status_code == 200
+    assert scored.json()["news"][0]["label"] == "利好"
+    assert wb.llm._cursor == 1  # 恰好消费一次
+
+    again = client.post("/api/stocks/600000/score-news").json()
+    assert again["news"][0]["label"] == "利好"
+    assert wb.llm._cursor == 1  # 二次全走缓存
 
 
 def test_stock_detail_unknown_symbol_502(tmp_path):
