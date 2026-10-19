@@ -83,6 +83,10 @@ def fetch_stock_name(symbol: str, transport=None) -> str:
 
 _KLINE_OUT_COLS = ["date", "open", "close", "high", "low", "volume"]
 
+# 在线 TTL 缓存：详情页几分钟内反复点同一只不再重发网络请求
+_KLINE_TTL_SECONDS = 300  # K 线 5 分钟（盘中价格会动，不设太长）
+_NEWS_TTL_SECONDS = 600  # 新闻 10 分钟
+
 
 def _standardize_kline(df):
     """中文列名统一映射为英文 OHLCV；缺 open/high/low 时以 close 兜底，volume 缺省 0。"""
@@ -139,6 +143,8 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
       2026-10-19 push2his 指纹级拉黑教训）；若给定 ``cache_dir`` 则写回
       parquet 供离线复用。
     """
+    import os
+
     import pandas as pd  # 懒加载：测试外不必强依赖
 
     if _offline_active():
@@ -155,6 +161,12 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
             ) from exc
         return _standardize_kline(df).tail(days).reset_index(drop=True)
 
+    # 在线 TTL 缓存：新鲜 parquet 直接用，几分钟内反复点同一只秒回
+    if cache_dir:
+        path = _kline_cache_path(cache_dir, symbol)
+        if os.path.exists(path) and time.time() - os.path.getmtime(path) < _KLINE_TTL_SECONDS:
+            return pd.read_parquet(path).tail(days).reset_index(drop=True)
+
     errors: list[str] = []
     global _em_cooldown_until
     # 熔断：东财刚失败过（如 TLS 指纹级拉黑）就别再撞，省 akshare 重试的 4s+
@@ -166,8 +178,6 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
         try:
             df = _standardize_kline(source(symbol, days)).tail(days).reset_index(drop=True)
             if cache_dir:
-                import os
-
                 os.makedirs(cache_dir, exist_ok=True)
                 df.to_parquet(_kline_cache_path(cache_dir, symbol), index=False)
             return df
@@ -179,6 +189,13 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
     raise RuntimeError(f"K 线双源均失败：{'；'.join(errors)}")
 
 
+def _stock_news_em(symbol: str):
+    """akshare 新闻检索（独立一层便于测试打桩与后续换源）。"""
+    import akshare as ak
+
+    return ak.stock_news_em(symbol=symbol)
+
+
 def fetch_news(
     symbol: str, cache_dir: str | None = None, query: str | None = None
 ) -> list[dict[str, Any]]:
@@ -187,10 +204,13 @@ def fetch_news(
     - 离线模式：从 ``{cache_dir}/news_{symbol}.json`` 读取。
     - 在线模式：调用 akshare 搜索新闻——``query`` 给定时用它作检索词
       （中文股名检索远比 6 位代码准：按代码搜会命中任何含该数字的文章），
-      ``cache_dir`` 给定时写回 json（仍按 symbol 存，测试 fixture 不受影响）。
+      ``cache_dir`` 给定时写回 json，且 10 分钟内直接读本地缓存
+      （仍按 symbol 存，测试 fixture 不受影响）。
 
     返回 ``list[dict]``，每项形如 ``{title, content, url, ts?}``。
     """
+    import os
+
     if _offline_active():
         if not cache_dir:
             raise FileNotFoundError(
@@ -205,9 +225,14 @@ def fetch_news(
                 f"离线新闻 fixture 缺失：{path}；请先在线抓取或补 fixture"
             ) from exc
 
-    import akshare as ak
+    # 在线 TTL 缓存
+    if cache_dir:
+        path = _news_cache_path(cache_dir, symbol)
+        if os.path.exists(path) and time.time() - os.path.getmtime(path) < _NEWS_TTL_SECONDS:
+            with open(path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
 
-    raw = ak.stock_news_em(symbol=query or symbol)
+    raw = _stock_news_em(query or symbol)
     # akshare 返回 DataFrame，列名为中文；映射到统一 schema
     col_map = {"新闻标题": "title", "新闻内容": "content", "新闻链接": "url", "发布时间": "ts"}
     records: list[dict[str, Any]] = []

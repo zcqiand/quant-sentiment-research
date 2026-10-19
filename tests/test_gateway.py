@@ -90,3 +90,77 @@ def test_kline_em_cooldown_skips_eastmoney_after_failure(monkeypatch):
     monkeypatch.setattr(gateway, "_em_cooldown_until", 0.0)  # 冷却期过，恢复尝试
     gateway.fetch_kline("600000", days=5, cache_dir=None)
     assert len(em_calls) == 2
+
+
+def _fake_tx_df():
+    import pandas as pd
+
+    return pd.DataFrame(
+        {
+            "date": [f"2026-01-0{i}" for i in range(1, 6)],
+            "open": [10.0] * 5,
+            "close": [10.1] * 5,
+            "high": [10.2] * 5,
+            "low": [9.9] * 5,
+            "volume": [100] * 5,
+        }
+    )
+
+
+def test_kline_online_ttl_cache(monkeypatch, tmp_path):
+    """在线模式 TTL 缓存：几分钟内再取同一只不重发网络请求。"""
+    import os
+    import time as time_mod
+
+    from quant_sentiment import gateway
+
+    tx_calls = []
+
+    def fake_tx(symbol, days):
+        tx_calls.append(symbol)
+        return _fake_tx_df()
+
+    set_offline(False)
+    monkeypatch.setattr(gateway, "_fetch_kline_tencent", fake_tx)
+    monkeypatch.setattr(gateway, "_em_cooldown_until", time_mod.time() + 9999)  # 不走东财
+
+    gateway.fetch_kline("600000", days=5, cache_dir=str(tmp_path))
+    gateway.fetch_kline("600000", days=5, cache_dir=str(tmp_path))
+    assert len(tx_calls) == 1  # 第二次命中 TTL 缓存
+
+    path = tmp_path / "kline_600000.parquet"  # 缓存过期后重新抓
+    old = path.stat().st_mtime - 10_000
+    os.utime(path, (old, old))
+    gateway.fetch_kline("600000", days=5, cache_dir=str(tmp_path))
+    assert len(tx_calls) == 2
+
+
+def test_news_online_ttl_cache(monkeypatch, tmp_path):
+    """新闻在线 TTL 缓存：TTL 内再取直接读本地 json。"""
+    import json as json_mod
+
+    import pandas as pd
+
+    from quant_sentiment import gateway
+
+    em_calls = []
+
+    def fake_news_em(symbol):
+        em_calls.append(symbol)
+        return pd.DataFrame(
+            {
+                "新闻标题": [f"{symbol} 新闻"],
+                "新闻内容": ["内容"],
+                "新闻链接": [f"http://x/{symbol}"],
+                "发布时间": ["2026-01-30 08:00"],
+            }
+        )
+
+    set_offline(False)
+    monkeypatch.setattr(gateway, "_stock_news_em", fake_news_em)
+
+    out1 = gateway.fetch_news("600000", cache_dir=str(tmp_path), query="浦发银行")
+    out2 = gateway.fetch_news("600000", cache_dir=str(tmp_path), query="浦发银行")
+    assert len(em_calls) == 1  # 第二次命中缓存
+    assert out1 == out2
+    assert json_mod.dumps(out1, ensure_ascii=False).find("新闻") > 0

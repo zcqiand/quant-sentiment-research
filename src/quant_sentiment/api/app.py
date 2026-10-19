@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
 
@@ -50,7 +51,8 @@ def _llm_descriptor(llm) -> dict:
 
 def _default_workbench() -> Workbench:
     db_path = os.getenv("WORKBENCH_DB_PATH") or str(_DATA_DIR / "workbench.db")
-    return Workbench(db_path=db_path)
+    # cache_dir 必须给：详情接口的 K 线/新闻在线 TTL 缓存全靠它落盘
+    return Workbench(db_path=db_path, cache_dir=str(_DATA_DIR))
 
 
 @lru_cache(maxsize=1)
@@ -131,19 +133,23 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
         kline = None
         news = []
         fetch_errors = []
-        for fetcher in (
-            lambda: fetch_kline(symbol, days=60, cache_dir=wb.cache_dir),
-            lambda: _fetch_sorted_news(symbol),
-        ):
-            try:
-                result = fetcher()
-            except Exception as exc:  # noqa: BLE001 - 单源降级
-                fetch_errors.append(str(exc))
-                continue
-            if isinstance(result, list):
-                news = result
-            else:
-                kline = result
+        fetchers = {
+            "kline": lambda: fetch_kline(symbol, days=60, cache_dir=wb.cache_dir),
+            "news": lambda: _fetch_sorted_news(symbol),
+        }
+        with ThreadPoolExecutor(max_workers=2) as pool:  # 两路互不依赖，并行省一半墙钟
+            futures = {pool.submit(fn): name for name, fn in fetchers.items()}
+            for fut in as_completed(futures):
+                name = futures[fut]
+                try:
+                    result = fut.result()
+                except Exception as exc:  # noqa: BLE001 - 单源降级
+                    fetch_errors.append(f"{name}: {exc}")
+                    continue
+                if name == "news":
+                    news = result
+                else:
+                    kline = result
         if kline is None and not news:
             raise HTTPException(status_code=502, detail=f"行情数据不可用：{'；'.join(fetch_errors)}")
         closes = [float(x) for x in kline["close"].tolist()] if kline is not None else []

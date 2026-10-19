@@ -58,6 +58,15 @@ def test_health(tmp_path):
     assert body["llm"]["mode"] == "fake"
 
 
+def test_default_workbench_has_cache_dir(tmp_path, monkeypatch):
+    """线上默认 Workbench 必须带 cache_dir——详情接口的 K 线/新闻 TTL 缓存靠它落盘。"""
+    from quant_sentiment.api.app import _default_workbench
+
+    monkeypatch.setenv("WORKBENCH_DB_PATH", str(tmp_path / "wb.db"))
+    wb = _default_workbench()
+    assert wb.cache_dir
+
+
 def test_watchlist_crud(tmp_path):
     client = _client(tmp_path)
     assert [r["symbol"] for r in client.get("/api/watchlist").json()] == ["600000"]
