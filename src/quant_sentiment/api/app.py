@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from .. import screener as screener_module
 from ..gateway import _offline_active, fetch_kline, fetch_news
 from ..backtest import run_backtest
 from ..llm import FakeLLM
@@ -171,6 +172,16 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
             return wb.research_snapshot(symbol)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"研究快照失败：{exc}") from exc
+
+    @app.get("/api/screener/{kind}")
+    def screener(kind: str, refresh: bool = False):
+        """选股器：whitehorse（白马价值）/ dividend（高股息防守）。"""
+        try:
+            return screener_module.run_screen(kind, wb.cache_dir or str(_DATA_DIR), refresh)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - 数据源抖动统一 502
+            raise HTTPException(status_code=502, detail=f"选股失败：{exc}") from exc
 
     @app.get("/api/backtest/{symbol}")
     def backtest(symbol: str):

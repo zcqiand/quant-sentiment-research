@@ -1,6 +1,6 @@
 # quant-sentiment-research — 仓库工作约定（供 Claude Code）
 
-独立项目（不受 suite 门禁）：股票交易个人工作台——A 股舆情 + 技术面量化投研（LangGraph）。
+独立项目（不受 suite 门禁）：股票个人工作台——A 股舆情 + 技术面量化投研（LangGraph）。
 
 ## 项目定位
 
@@ -54,8 +54,9 @@ quant-sentiment-research/
 │   ├── report.py         ← 研究简报渲染
 │   ├── llm.py/llm_live.py← LLM 工厂（env 装配 + FakeLLM 回退 + <think> 剥离）
 │   ├── store.py          ← SQLite（watchlist/打分缓存/快照/扫描历史）
+│   ├── screener.py       ← 价值选股器（白马价值/高股息防守 TOP20，候选池按天缓存）
 │   ├── workbench.py      ← 工作台编排（快照/合成分/一键扫描）
-│   └── api/app.py        ← FastAPI 路由（health/watchlist/scan/stocks/backtest）
+│   └── api/app.py        ← FastAPI 路由（health/watchlist/scan/stocks/screener/backtest）
 ├── frontend/             ← React 交易工作台前端（看板/个股详情/金标回测）
 ├── scripts/run_api.py    ← 后端启动
 ├── data/                 ← SQLite + 金标文件（gitignore）
@@ -66,6 +67,11 @@ quant-sentiment-research/
 
 - **合成分口径**（改动须同步前端 hint 文案）：composite = 100×(0.45×舆情 + 0.45×技术 + 0.10×热度)；
   标签 ≥60 重点关注 / ≥30 关注 / >-30 观望 / >-60 谨慎 / 其余 回避研究。
+- **选股器口径**（改动须同步 screener.CALIBER 常量与前端 hint）：白马价值 =
+  0<PE(TTM)<20 + ROE(最近年报加权)>15% + 负债率(最近中报)<50% + 连续3年年报OCF>0，
+  ROE 降序；高股息防守 = 股息率(近三年年报每股股利均值/现价)>5% + PB<1.5 +
+  PE(TTM)>0 + 连续3年年报OCF>0，股息率降序。候选池行 `data/screen_rows_<日期>.json`
+  按 6h TTL 缓存，东财 datacenter 财务表（push2his 拉黑不受影响）+ 腾讯 qt 批量报价。
 - **合规免责**：输出为研究关注度排序，界面与简报保留免责声明，不出现买卖指令。
 - **MiniMax-M3 指纹**：响应内联 `<think>…</think>`，llm_live.strip_think 统一剥离；
   `MINIMAX_MODEL` 若是 image-01 之类图像模型不能用于文本。

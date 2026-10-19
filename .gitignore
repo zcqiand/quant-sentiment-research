@@ -14,6 +14,8 @@ venv/
 data/cache/
 # 工作台运行期数据（SQLite / 金标 / 调试转储）
 data/*.db
+data/*.log
+data/screen_rows_*.json
 data/gold_*.json
 scan-debug.json
 nohup.out

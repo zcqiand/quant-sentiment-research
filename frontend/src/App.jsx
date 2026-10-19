@@ -3,10 +3,11 @@ import { api } from './api.js'
 import Dashboard from './Dashboard.jsx'
 import StockDetail from './StockDetail.jsx'
 import BacktestPanel from './BacktestPanel.jsx'
+import Screener from './Screener.jsx'
 
 export default function App() {
   const [health, setHealth] = useState(null)
-  const [view, setView] = useState('dashboard') // dashboard | detail | backtest
+  const [view, setView] = useState('dashboard') // dashboard | screener | detail | backtest
   const [selected, setSelected] = useState(null)
 
   useEffect(() => {
@@ -25,13 +26,16 @@ export default function App() {
         <div className="brand">
           <span className="logo">📈</span>
           <div>
-            <h1>股票交易个人工作台</h1>
+            <h1>股票个人工作台</h1>
             <span className="sub">舆情 × 技术面 · 研究参考非投资建议</span>
           </div>
         </div>
         <nav>
           <button className={view === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setView('dashboard')}>
             盘前看板
+          </button>
+          <button className={view === 'screener' ? 'nav active' : 'nav'} onClick={() => setView('screener')}>
+            选股器
           </button>
           <button className={view === 'backtest' ? 'nav active' : 'nav'} onClick={() => setView('backtest')}>
             金标回测
@@ -49,6 +53,7 @@ export default function App() {
 
       <main>
         {view === 'dashboard' && <Dashboard onOpenStock={openStock} />}
+        {view === 'screener' && <Screener onOpenStock={openStock} />}
         {view === 'detail' && selected && (
           <StockDetail symbol={selected} onBack={() => setView('dashboard')} />
         )}

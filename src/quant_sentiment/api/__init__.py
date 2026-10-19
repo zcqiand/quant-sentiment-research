@@ -1,4 +1,4 @@
-"""股票交易个人工作台 HTTP API（FastAPI）。"""
+"""股票个人工作台 HTTP API（FastAPI）。"""
 
 from .app import create_app
 

@@ -23,4 +23,6 @@ export const api = {
   stockDetail: (symbol) => req(`/api/stocks/${symbol}`),
   research: (symbol) => req(`/api/stocks/${symbol}/research`, { method: 'POST' }),
   backtest: (symbol) => req(`/api/backtest/${symbol}`),
+  screener: (kind, refresh = false) =>
+    req(`/api/screener/${kind}${refresh ? '?refresh=true' : ''}`),
 }

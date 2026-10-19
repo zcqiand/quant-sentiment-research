@@ -1,4 +1,4 @@
-# 股票交易个人工作台（quant-sentiment-research）
+# 股票个人工作台（quant-sentiment-research）
 
 A 股舆情 + 技术面量化投研工作台。**早上开盘前一键扫描自选股**：
 舆情 × 技术面 × 资金热度合成分排序 → 点进个股看 K 线/新闻情绪/证据链 →
@@ -32,6 +32,9 @@ LLM：默认读 `MINIMAX_API_KEY`（本机 `.claude/settings.local.json` 注入�
 4. **点进个股**：K 线（MA5/20+成交量）、技术指标、新闻情绪列表、证据链与研究简报
 5. **金标回测**（可选）：`data/gold_<代码>.json` 放人工金标
    `{"新闻url或标题": "利好|利空|中性"}`，回测页看 LLM 判定的 precision/recall
+6. **选股器**：白马价值 TOP20（PE<20 + ROE>15% + 负债率<50% + 连续3年OCF为正）与
+   高股息防守 TOP20（股息率>5% + PB<1.5 + 盈利为正 + 连续3年OCF为正），
+   一键加自选 → 进盘前流程；候选池按天缓存，点「强制刷新」重拉
 
 ## 功能特性
 
@@ -41,6 +44,8 @@ LLM：默认读 `MINIMAX_API_KEY`（本机 `.claude/settings.local.json` 注入�
 - **证据链防幻觉**：每条结论带来源，grounding 门控
 - **多模型路由**：LLM 装配链 `LLM_*` → `MINIMAX_*` → `OPENAI/ANTHROPIC` → FakeLLM
 - **金标回测**：情绪判定当分类器，precision/recall 评估
+- **价值选股器**：白马价值 / 高股息防守双策略 TOP20，东财财务四表 × 腾讯批量行情，
+  候选池按天缓存（push2his 拉黑期不受影响）
 
 ## 技术栈
 
