@@ -32,18 +32,15 @@ class FakeLLM:
 
 
 def make_llm():
-    """Demo LLM 工厂。
-
-    无 API Key 时返回 ``FakeLLM``，让流程在「无 Key、无网络」环境下
-    也能跑起来（本书案例仓的默认形态）。
-
-    生产用法：把这里的 ``pass`` 占位换成真实集成——例如把 LangChain 的
-    ``ChatModel`` 包一层适配器，使其符合 ``generate(prompt) -> str`` 的接口。
+    """LLM 工厂：有 Key（LLM_* / MINIMAX_API_KEY / OPENAI / ANTHROPIC）走真实端点，
+    无 Key 回退 ``FakeLLM``——保持「无 Key、无网络」可跑的默认形态。
+    装配细则见 ``llm_live.make_llm_from_env``。
     """
-    import os
+    from .llm_live import make_llm_from_env
 
-    if os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY"):
-        pass  # 占位——真实集成见书章节
+    live = make_llm_from_env()
+    if live is not None:
+        return live
     return FakeLLM(script=['{"label":"中性","confidence":0.3}'])
 
 

@@ -49,16 +49,34 @@ def _news_cache_path(cache_dir: str, symbol: str) -> str:
     return os.path.join(cache_dir, f"news_{symbol}.json")
 
 
+_KLINE_OUT_COLS = ["date", "open", "close", "high", "low", "volume"]
+
+
+def _standardize_kline(df):
+    """中文列名统一映射为英文 OHLCV；缺 open/high/low 时以 close 兜底，volume 缺省 0。"""
+    df = df.rename(columns={c: v for c, v in _KLINE_COL_MAP.items() if c in df.columns})
+    if "close" not in df.columns:
+        raise ValueError(f"K 线数据缺少 close 列：{list(df.columns)}")
+    for col in ("open", "high", "low"):
+        if col not in df.columns:
+            df[col] = df["close"]
+    if "volume" not in df.columns:
+        df["volume"] = 0
+    if "date" not in df.columns:
+        df["date"] = [f"d{i + 1}" for i in range(len(df))]
+    return df[_KLINE_OUT_COLS].reset_index(drop=True)
+
+
 def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
-    """取 ``symbol`` 最近 ``days`` 个交易日的 K 线。
+    """取 ``symbol`` 最近 ``days`` 个交易日标准 OHLCV K 线。
+
+    返回 DataFrame 固定列：date/open/close/high/low/volume（英文列）。
 
     - 离线模式（``set_offline(True)`` 或 akshare 不可导入）：从
       ``{cache_dir}/kline_{symbol}.parquet`` 读取，缺失则抛
       ``FileNotFoundError`` 并给出清晰提示。
-    - 在线模式：调用 akshare 取近期日 K，返回含 ``close`` 列的 DataFrame；
-      若给定 ``cache_dir`` 则写回 parquet 供离线复用。
-
-    返回的 DataFrame 至少含 ``close`` 列。
+    - 在线模式：调用 akshare 取近期日 K（前复权）；若给定 ``cache_dir``
+      则写回 parquet 供离线复用。
     """
     import pandas as pd  # 懒加载：测试外不必强依赖
 
@@ -74,22 +92,18 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
             raise FileNotFoundError(
                 f"离线 K 线 fixture 缺失：{path}；请先在线抓取或补 fixture"
             ) from exc
-        if "close" not in df.columns:
-            raise ValueError(f"离线 K 线 fixture {path} 缺少 close 列")
-        return df.tail(days).reset_index(drop=True)
+        return _standardize_kline(df).tail(days).reset_index(drop=True)
 
     # 在线：akshare 已在 _offline_active() 中确认可导入
     import akshare as ak
+    from datetime import datetime, timedelta
 
+    # 只请求需要的窗口（≈2 倍日历天覆盖交易日），避免全历史大包触发限流
+    start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
     df = ak.stock_zh_a_hist(
-        symbol=symbol, period="daily", adjust="qfq"
+        symbol=symbol, period="daily", start_date=start_date, adjust="qfq"
     )
-    # akshare 返回中文列名，统一映射到英文 close
-    if "close" not in df.columns and "收盘" in df.columns:
-        df = df.rename(columns={"收盘": "close"})
-    if "close" not in df.columns:
-        raise ValueError(f"akshare 返回的 K 线缺少 close 列：{list(df.columns)}")
-    df = df.tail(days).reset_index(drop=True)
+    df = _standardize_kline(df).tail(days).reset_index(drop=True)
     if cache_dir:
         import os
 
@@ -143,6 +157,16 @@ def fetch_news(symbol: str, cache_dir: str | None = None) -> list[dict[str, Any]
         with open(_news_cache_path(cache_dir, symbol), "w", encoding="utf-8") as fh:
             json.dump(records, fh, ensure_ascii=False)
     return records
+
+
+_KLINE_COL_MAP = {
+    "日期": "date",
+    "开盘": "open",
+    "收盘": "close",
+    "最高": "high",
+    "最低": "low",
+    "成交量": "volume",
+}
 
 
 __all__ = ["set_offline", "fetch_kline", "fetch_news"]

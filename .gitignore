@@ -12,6 +12,15 @@ venv/
 
 # 本地数据缓存（离线 fixture 不放此目录；此目录用于运行期 akshare 缓存）
 data/cache/
+# 工作台运行期数据（SQLite / 金标 / 调试转储）
+data/*.db
+data/gold_*.json
+scan-debug.json
+nohup.out
+
+# 前端
+node_modules/
+frontend/dist/
 
 # OS
 .DS_Store
