@@ -112,11 +112,15 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
     return df
 
 
-def fetch_news(symbol: str, cache_dir: str | None = None) -> list[dict[str, Any]]:
+def fetch_news(
+    symbol: str, cache_dir: str | None = None, query: str | None = None
+) -> list[dict[str, Any]]:
     """取 ``symbol`` 相关新闻列表。
 
     - 离线模式：从 ``{cache_dir}/news_{symbol}.json`` 读取。
-    - 在线模式：调用 akshare 取新闻，``cache_dir`` 给定时写回 json。
+    - 在线模式：调用 akshare 搜索新闻——``query`` 给定时用它作检索词
+      （中文股名检索远比 6 位代码准：按代码搜会命中任何含该数字的文章），
+      ``cache_dir`` 给定时写回 json（仍按 symbol 存，测试 fixture 不受影响）。
 
     返回 ``list[dict]``，每项形如 ``{title, content, url, ts?}``。
     """
@@ -136,7 +140,7 @@ def fetch_news(symbol: str, cache_dir: str | None = None) -> list[dict[str, Any]
 
     import akshare as ak
 
-    raw = ak.stock_news_em(symbol=symbol)
+    raw = ak.stock_news_em(symbol=query or symbol)
     # akshare 返回 DataFrame，列名为中文；映射到统一 schema
     col_map = {"新闻标题": "title", "新闻内容": "content", "新闻链接": "url", "发布时间": "ts"}
     records: list[dict[str, Any]] = []

@@ -109,6 +109,49 @@ def test_latest_snapshots_from_store(tmp_path):
     assert latest["600000"]["composite"] > 60
 
 
+def test_snapshot_degrades_without_kline(tmp_path):
+    """K 线源不可达：技术维度置 None，舆情+热度维度照常出快照（权重归一）。"""
+    (tmp_path / "news_000003.json").write_text(
+        json.dumps(
+            [
+                {"title": "重大利好", "content": "签订战略合作", "url": "http://z/1"},
+                {"title": "再获增持", "content": "股东增持", "url": "http://z/2"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    wb = Workbench(db_path=str(tmp_path / "wb.db"), cache_dir=str(tmp_path), llm=_bull_llm())
+    snap = wb.research_snapshot("000003")
+
+    assert snap["technical"] is None
+    assert snap["price"] is None
+    assert snap["change_pct"] is None
+    assert snap["sentiment"]["bull"] == 2
+    assert len(snap["evidence"]) >= 2  # 资金面+舆情，无技术面证据
+    # 舆情=1.0, heat=0.2 → 归一后 composite = 100*(0.45*1+0.10*0.2)/0.55 ≈ 85
+    assert snap["composite"] == 85
+    assert snap["composite_label"] == "重点关注"
+
+
+def test_news_query_prefers_cjk_name(tmp_path):
+    from quant_sentiment.workbench import _dedupe_news
+
+    wb = Workbench(db_path=str(tmp_path / "wb.db"), cache_dir=str(tmp_path), llm=_bull_llm())
+    wb.add_stock("600000", "浦发银行")
+    wb.add_stock("000001", "SPDB")  # 非中文名不用于检索（检索质量差）
+    assert wb.news_query("600000") == "浦发银行"
+    assert wb.news_query("000001") is None
+    assert wb.news_query("999999") is None  # 不在自选 → 用代码
+
+    news = [
+        {"url": "u1", "title": "t1"},
+        {"url": "u1", "title": "t1"},  # 完全重复
+        {"url": "u2", "title": "t1"},  # 同题不同链，保守保留
+        {"url": "", "title": "t2"},
+    ]
+    assert len(_dedupe_news(news)) == 3
+
+
 def test_downtrend_bearish_news_gives_low_score(tmp_path):
     pd.DataFrame(
         {

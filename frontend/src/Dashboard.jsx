@@ -141,7 +141,7 @@ export default function Dashboard({ onOpenStock }) {
                 {r.change_pct > 0 ? '+' : ''}{r.change_pct?.toFixed(2)}
               </td>
               <td>
-                {r.technical?.trend} <small>({r.technical?.score})</small>
+                {r.technical ? `${r.technical.trend} (${r.technical.score})` : '—'}
               </td>
               <td>
                 {r.sentiment?.bull}/{r.sentiment?.bear}/{r.sentiment?.neutral}

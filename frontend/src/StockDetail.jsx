@@ -64,7 +64,11 @@ export default function StockDetail({ symbol, onBack }) {
         )}
       </div>
 
-      <KlineChart kline={detail.kline} />
+      {detail.kline ? (
+        <KlineChart kline={detail.kline} />
+      ) : (
+        <div className="kline-chart kline-missing">K 线数据暂时不可用（数据源限流中），舆情数据不受影响</div>
+      )}
 
       <div className="detail-grid">
         <section className="panel">

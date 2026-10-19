@@ -19,7 +19,7 @@ from ..gateway import _offline_active, fetch_kline, fetch_news
 from ..backtest import run_backtest
 from ..llm import FakeLLM
 from ..llm_live import AnthropicLLM, OpenAICompatLLM
-from ..workbench import Workbench
+from ..workbench import Workbench, _dedupe_news
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DATA_DIR = _REPO_ROOT / "data"
@@ -105,12 +105,25 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
 
     @app.get("/api/stocks/{symbol}")
     def stock_detail(symbol: str):
-        try:
-            kline = fetch_kline(symbol, days=60, cache_dir=wb.cache_dir)
-            news = fetch_news(symbol, cache_dir=wb.cache_dir)
-        except Exception as exc:  # noqa: BLE001 - 数据源不可达统一 502
-            raise HTTPException(status_code=502, detail=f"行情数据不可用：{exc}") from exc
-        closes = [float(x) for x in kline["close"].tolist()]
+        kline = None
+        news = []
+        fetch_errors = []
+        for fetcher in (
+            lambda: fetch_kline(symbol, days=60, cache_dir=wb.cache_dir),
+            lambda: _dedupe_news(fetch_news(symbol, cache_dir=wb.cache_dir, query=wb.news_query(symbol))),
+        ):
+            try:
+                result = fetcher()
+            except Exception as exc:  # noqa: BLE001 - 单源降级
+                fetch_errors.append(str(exc))
+                continue
+            if isinstance(result, list):
+                news = result
+            else:
+                kline = result
+        if kline is None and not news:
+            raise HTTPException(status_code=502, detail=f"行情数据不可用：{'；'.join(fetch_errors)}")
+        closes = [float(x) for x in kline["close"].tolist()] if kline is not None else []
         from ..indicators import ma, macd, rsi, technical_score
 
         scored = [wb.score_news_cached(item, symbol) for item in news]
@@ -125,12 +138,10 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
             }
             for item, s in zip(news, scored)
         ]
-        macd_full = macd(closes)
-        return {
-            "symbol": symbol,
-            "name": next((r["name"] for r in wb.list_watchlist() if r["symbol"] == symbol), ""),
-            "kline": kline.to_dict(orient="records"),
-            "indicators": {
+        indicators = None
+        if closes:
+            macd_full = macd(closes)
+            indicators = {
                 "ma5": ma(closes, 5)[-1],
                 "ma20": ma(closes, 20)[-1],
                 "rsi": rsi(closes),
@@ -140,7 +151,12 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
                     "hist": macd_full["hist"][-1],
                 },
                 "technical_score": technical_score(closes),
-            },
+            }
+        return {
+            "symbol": symbol,
+            "name": next((r["name"] for r in wb.list_watchlist() if r["symbol"] == symbol), ""),
+            "kline": kline.to_dict(orient="records") if kline is not None else None,
+            "indicators": indicators,
             "news": news_out,
             "latest": wb.store.latest_run_per_symbol().get(symbol),
         }

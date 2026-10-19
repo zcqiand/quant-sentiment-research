@@ -35,6 +35,23 @@ def _news_key(item: dict) -> str:
     return item.get("url") or item.get("title") or ""
 
 
+def _has_cjk(text: str) -> bool:
+    return any("一" <= ch <= "鿿" for ch in text)
+
+
+def _dedupe_news(news: list[dict]) -> list[dict]:
+    """按 url 与 title 双键去重（akshare 检索常见同文重复）。"""
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for item in news:
+        keys = {item.get("url") or "", item.get("title") or ""}
+        if all(k in seen for k in keys if k):
+            continue
+        seen.update(k for k in keys if k)
+        unique.append(item)
+    return unique
+
+
 def composite_label(score: float) -> str:
     """合成分 → 研究关注度标签（非买卖指令）。"""
     if score >= 60:
@@ -82,22 +99,44 @@ class Workbench:
         self.store.put_news_score(key, symbol, score.label, score.confidence)
         return {"label": score.label, "confidence": score.confidence}
 
+    def news_query(self, symbol: str) -> str | None:
+        """新闻检索词：自选股中文名（含中文）优先，否则用代码。
+
+        eastmoney 搜索按关键词文本匹配，6 位数字代码会命中任何含该数字的
+        文章（如「回购股份600000股」），中文股名检索才准。
+        """
+        row = next((r for r in self.list_watchlist() if r["symbol"] == symbol), None)
+        if row and row.get("name") and _has_cjk(row["name"]):
+            return row["name"]
+        return None
+
     # ---- 研究快照 ----
 
     def research_snapshot(self, symbol: str) -> dict:
-        """单只标的完整研究快照：OHLCV + 指标 + 舆情投票 + 证据链 + 简报。"""
-        kline = fetch_kline(symbol, days=60, cache_dir=self.cache_dir)
-        news = fetch_news(symbol, cache_dir=self.cache_dir)
-        closes = [float(x) for x in kline["close"].tolist()]
-        price = closes[-1]
-        prev = closes[-2] if len(closes) > 1 else price
-        change_pct = (price / prev - 1.0) * 100.0 if prev else 0.0
+        """单只标的完整研究快照：OHLCV + 指标 + 舆情投票 + 证据链 + 简报。
 
-        ma5 = ma(closes, 5)[-1]
-        ma20 = ma(closes, 20)[-1]
-        rsi14 = rsi(closes)
-        tech = technical_score(closes)
-        trend = "上行" if price > closes[0] else ("下行" if price < closes[0] else "横盘")
+        数据源降级：K 线不可达时技术维度置 None，合成分按可用维度权重归一，
+        快照照常产出——单源抖动不废整只研究。
+        """
+        news = _dedupe_news(fetch_news(symbol, cache_dir=self.cache_dir, query=self.news_query(symbol)))
+
+        kline = None
+        price = change_pct = None
+        tech = ma5 = ma20 = rsi14 = None
+        trend = "未知"
+        try:
+            kline = fetch_kline(symbol, days=60, cache_dir=self.cache_dir)
+            closes = [float(x) for x in kline["close"].tolist()]
+            price = closes[-1]
+            prev = closes[-2] if len(closes) > 1 else price
+            change_pct = (price / prev - 1.0) * 100.0 if prev else 0.0
+            ma5 = ma(closes, 5)[-1]
+            ma20 = ma(closes, 20)[-1]
+            rsi14 = rsi(closes)
+            tech = technical_score(closes)
+            trend = "上行" if price > closes[0] else ("下行" if price < closes[0] else "横盘")
+        except Exception:  # noqa: BLE001 - 技术面降级，舆情/热度维度照常
+            kline = None
 
         scored_news: list[dict] = []
         for item in news:
@@ -105,8 +144,8 @@ class Workbench:
             scored_news.append(
                 {
                     "title": item.get("title", ""),
-                    "url": item.get("url", ""),
-                    "ts": item.get("ts", ""),
+                    "url": item.get("url", "") or "",
+                    "ts": item.get("ts", "") or "",
                     "label": s["label"],
                     "confidence": s["confidence"],
                 }
@@ -117,18 +156,26 @@ class Workbench:
         total = len(scored_news)
         sentiment = (bull - bear) / max(1, total)
         heat = min(1.0, total / 10.0)
-        composite = round(100.0 * (0.45 * sentiment + 0.45 * tech + 0.10 * heat))
+        # 权重归一：技术面不可用时只用 舆情(0.45) + 热度(0.10) 重新归一
+        weight_tech = 0.45 if tech is not None else 0.0
+        w_sum = 0.45 + weight_tech + 0.10
+        composite = round(
+            100.0
+            * (0.45 * sentiment + weight_tech * (tech or 0.0) + 0.10 * heat)
+            / w_sum
+        )
 
         ts = _now()
-        last_date = str(kline["date"].iloc[-1]) if len(kline) else ""
+        last_date = str(kline["date"].iloc[-1]) if kline is not None and len(kline) else ""
         state: dict = {"symbol": symbol, "evidence": [], "scores": {}}
-        state = {**state, **attach_evidence(
-            state,
-            claim=f"技术面：近期价格{trend}",
-            source_text=f"close={price}, ma5={ma5}, ma20={ma20}, rsi={rsi14}",
-            source_url="internal:kline",
-            ts=last_date,
-        )}
+        if kline is not None:
+            state = {**state, **attach_evidence(
+                state,
+                claim=f"技术面：近期价格{trend}",
+                source_text=f"close={price}, ma5={ma5}, ma20={ma20}, rsi={rsi14}",
+                source_url="internal:kline",
+                ts=last_date,
+            )}
         state = {**state, **attach_evidence(
             state,
             claim=f"资金面：近{total}条资讯",
@@ -145,7 +192,7 @@ class Workbench:
                 ts=scored_news[0]["ts"],
             )}
         state["scores"] = {
-            "technical": f"{trend}（{tech:.2f}）",
+            "technical": f"{trend}（{tech:.2f}）" if tech is not None else "数据不可用",
             "fund_flow": f"关注度{total}条",
             "sentiment": f"利好{bull}/利空{bear}/中性{neutral}",
         }
@@ -158,8 +205,12 @@ class Workbench:
             ),
             "ts": ts,
             "price": price,
-            "change_pct": round(change_pct, 2),
-            "technical": {"trend": trend, "ma5": ma5, "ma20": ma20, "rsi": rsi14, "score": round(tech, 3)},
+            "change_pct": round(change_pct, 2) if change_pct is not None else None,
+            "technical": (
+                {"trend": trend, "ma5": ma5, "ma20": ma20, "rsi": rsi14, "score": round(tech, 3)}
+                if tech is not None
+                else None
+            ),
             "sentiment": {"score": round(sentiment, 3), "bull": bull, "bear": bear, "neutral": neutral, "total": total},
             "heat": round(heat, 2),
             "composite": composite,

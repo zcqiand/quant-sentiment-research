@@ -103,6 +103,7 @@ input {
 .detail-head h2 { margin: 0; flex: 1; }
 .ind-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .kline-chart { width: 100%; height: 420px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+.kline-missing { display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
 .panel h3 { margin: 0 0 10px; font-size: 15px; }
