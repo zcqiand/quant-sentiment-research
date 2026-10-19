@@ -67,6 +67,28 @@ def _standardize_kline(df):
     return df[_KLINE_OUT_COLS].reset_index(drop=True)
 
 
+def _fetch_kline_eastmoney(symbol: str, days: int):
+    """eastmoney 源（ak.stock_zh_a_hist，前复权）——主源，容量大但易限流。"""
+    import akshare as ak
+    from datetime import datetime, timedelta
+
+    start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
+    df = ak.stock_zh_a_hist(
+        symbol=symbol, period="daily", start_date=start_date, adjust="qfq"
+    )
+    return df
+
+
+def _fetch_kline_tencent(symbol: str, days: int):
+    """腾讯源（ak.stock_zh_a_hist_tx，前复权）——备援，host 独立不易同限。"""
+    import akshare as ak
+    from datetime import datetime, timedelta
+
+    start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
+    end_date = datetime.now().strftime("%Y%m%d")
+    return ak.stock_zh_a_hist_tx(symbol=symbol, start_date=start_date, end_date=end_date)
+
+
 def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
     """取 ``symbol`` 最近 ``days`` 个交易日标准 OHLCV K 线。
 
@@ -75,8 +97,9 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
     - 离线模式（``set_offline(True)`` 或 akshare 不可导入）：从
       ``{cache_dir}/kline_{symbol}.parquet`` 读取，缺失则抛
       ``FileNotFoundError`` 并给出清晰提示。
-    - 在线模式：调用 akshare 取近期日 K（前复权）；若给定 ``cache_dir``
-      则写回 parquet 供离线复用。
+    - 在线模式：eastmoney 主源 → 腾讯备援（host 独立，防单源限流，
+      2026-10-19 push2his 指纹级拉黑教训）；若给定 ``cache_dir`` 则写回
+      parquet 供离线复用。
     """
     import pandas as pd  # 懒加载：测试外不必强依赖
 
@@ -94,22 +117,20 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
             ) from exc
         return _standardize_kline(df).tail(days).reset_index(drop=True)
 
-    # 在线：akshare 已在 _offline_active() 中确认可导入
-    import akshare as ak
-    from datetime import datetime, timedelta
+    errors: list[str] = []
+    for source in (_fetch_kline_eastmoney, _fetch_kline_tencent):
+        try:
+            df = _standardize_kline(source(symbol, days)).tail(days).reset_index(drop=True)
+            if cache_dir:
+                import os
 
-    # 只请求需要的窗口（≈2 倍日历天覆盖交易日），避免全历史大包触发限流
-    start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
-    df = ak.stock_zh_a_hist(
-        symbol=symbol, period="daily", start_date=start_date, adjust="qfq"
-    )
-    df = _standardize_kline(df).tail(days).reset_index(drop=True)
-    if cache_dir:
-        import os
+                os.makedirs(cache_dir, exist_ok=True)
+                df.to_parquet(_kline_cache_path(cache_dir, symbol), index=False)
+            return df
+        except Exception as exc:  # noqa: BLE001 - 单源失败切下一源
+            errors.append(f"{source.__name__}: {exc}")
 
-        os.makedirs(cache_dir, exist_ok=True)
-        df.to_parquet(_kline_cache_path(cache_dir, symbol), index=False)
-    return df
+    raise RuntimeError(f"K 线双源均失败：{'；'.join(errors)}")
 
 
 def fetch_news(
