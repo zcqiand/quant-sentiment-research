@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 # 模块级离线开关。测试通过 set_offline(True) 强制走本地 fixture；
@@ -120,6 +121,12 @@ def _fetch_kline_tencent(symbol: str, days: int):
     return ak.stock_zh_a_hist_tx(symbol=symbol, start_date=start_date, end_date=end_date)
 
 
+# ---- K 线：东财主源 + 腾讯备援，双源均失败才抛 ----
+
+_EM_COOLDOWN_SECONDS = 600  # 东财失败后的熔断冷却期（拉黑通常持续数小时，冷却只是止损）
+_em_cooldown_until = 0.0  # 模块级状态：冷却截止时间戳
+
+
 def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
     """取 ``symbol`` 最近 ``days`` 个交易日标准 OHLCV K 线。
 
@@ -149,7 +156,13 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
         return _standardize_kline(df).tail(days).reset_index(drop=True)
 
     errors: list[str] = []
-    for source in (_fetch_kline_eastmoney, _fetch_kline_tencent):
+    global _em_cooldown_until
+    # 熔断：东财刚失败过（如 TLS 指纹级拉黑）就别再撞，省 akshare 重试的 4s+
+    sources: list = []
+    if time.time() >= _em_cooldown_until:
+        sources.append(_fetch_kline_eastmoney)
+    sources.append(_fetch_kline_tencent)
+    for source in sources:
         try:
             df = _standardize_kline(source(symbol, days)).tail(days).reset_index(drop=True)
             if cache_dir:
@@ -159,6 +172,8 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
                 df.to_parquet(_kline_cache_path(cache_dir, symbol), index=False)
             return df
         except Exception as exc:  # noqa: BLE001 - 单源失败切下一源
+            if source is _fetch_kline_eastmoney:
+                _em_cooldown_until = time.time() + _EM_COOLDOWN_SECONDS
             errors.append(f"{source.__name__}: {exc}")
 
     raise RuntimeError(f"K 线双源均失败：{'；'.join(errors)}")

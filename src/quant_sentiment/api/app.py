@@ -132,7 +132,7 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
         closes = [float(x) for x in kline["close"].tolist()] if kline is not None else []
         from ..indicators import ma, macd, rsi, technical_score
 
-        scored = [wb.score_news_cached(item, symbol) for item in news]
+        scored = wb.score_news_batch(news, symbol)
         news_out = [
             {
                 "title": item.get("title", ""),

@@ -52,3 +52,41 @@ def test_fetch_stock_name_failure_returns_empty():
     transport = httpx.MockTransport(boom)
     assert fetch_stock_name("600000", transport=transport) == ""
     assert fetch_stock_name("abc", transport=transport) == ""  # 非法代码直接空
+
+
+def test_kline_em_cooldown_skips_eastmoney_after_failure(monkeypatch):
+    """东财失败后进入冷却期，冷却期内直接走腾讯不再撞东财（省 4s 重试）。"""
+    import pandas as pd
+
+    from quant_sentiment import gateway
+
+    em_calls = []
+
+    def fake_em(symbol, days):
+        em_calls.append(symbol)
+        raise RuntimeError("em blocked")
+
+    def fake_tx(symbol, days):
+        return pd.DataFrame(
+            {
+                "date": [f"2026-01-0{i}" for i in range(1, 6)],
+                "open": [10.0] * 5,
+                "close": [10.1] * 5,
+                "high": [10.2] * 5,
+                "low": [9.9] * 5,
+                "volume": [100] * 5,
+            }
+        )
+
+    set_offline(False)  # 其他测试会把模块级 _OFFLINE 留成 True，先归位
+    monkeypatch.setattr(gateway, "_fetch_kline_eastmoney", fake_em)
+    monkeypatch.setattr(gateway, "_fetch_kline_tencent", fake_tx)
+    monkeypatch.setattr(gateway, "_em_cooldown_until", 0.0)
+
+    gateway.fetch_kline("600000", days=5, cache_dir=None)
+    gateway.fetch_kline("600000", days=5, cache_dir=None)
+    assert len(em_calls) == 1  # 第二次在冷却期内，东财被跳过
+
+    monkeypatch.setattr(gateway, "_em_cooldown_until", 0.0)  # 冷却期过，恢复尝试
+    gateway.fetch_kline("600000", days=5, cache_dir=None)
+    assert len(em_calls) == 2

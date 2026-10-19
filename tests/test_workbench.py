@@ -168,3 +168,27 @@ def test_downtrend_bearish_news_gives_low_score(tmp_path):
     snap = wb.research_snapshot("000002")
     assert snap["composite"] < 0
     assert snap["composite_label"] in ("谨慎", "回避研究", "观望")
+
+
+def test_score_news_batch_order_and_cache(tmp_path):
+    """批量打分：并行跑 LLM，但结果顺序与输入一致；命中缓存的条目不再消费 LLM。"""
+    from quant_sentiment.workbench import Workbench
+
+    calls = []
+
+    class CountingLLM:
+        def generate(self, prompt):  # noqa: ARG002
+            calls.append(prompt)
+            return '{"label":"利好","confidence":0.9}'
+
+    wb = Workbench(db_path=str(tmp_path / "wb.db"), cache_dir=str(tmp_path), llm=CountingLLM())
+    news = [{"title": f"新闻{i}", "url": f"http://x/{i}", "ts": "2026-10-19"} for i in range(6)]
+
+    out = wb.score_news_batch(news, "600000")
+    assert len(out) == 6
+    assert all(o["label"] == "利好" for o in out)
+    assert len(calls) == 6  # 每条恰好消费一次 LLM
+
+    again = wb.score_news_batch(news, "600000")
+    assert all(o["label"] == "利好" for o in again)
+    assert len(calls) == 6  # 第二次全走缓存，零 token

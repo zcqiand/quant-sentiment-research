@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
 
@@ -113,6 +114,30 @@ class Workbench:
         self.store.put_news_score(key, symbol, score.label, score.confidence)
         return {"label": score.label, "confidence": score.confidence}
 
+    def score_news_batch(self, news: list[dict], symbol: str, max_workers: int = 4) -> list[dict]:
+        """批量打分：缓存命中的直接返回，未命中的并行调 LLM；结果顺序与输入一致。
+
+        MiniMax-M3 单条 3~10s，串行 10 条要一分多钟——并行 4 路把墙钟压到十几秒；
+        token 成本不变（并行只是省时间）。
+        """
+        results: list[dict | None] = [None] * len(news)
+        pending: list[int] = []
+        for i, item in enumerate(news):
+            hit = self.store.get_news_score(_news_key(item))
+            if hit is not None:
+                results[i] = {"label": hit["label"], "confidence": hit["confidence"]}
+            else:
+                pending.append(i)
+        if pending:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(score_sentiment, news[i], self.llm): i for i in pending}
+                for fut in as_completed(futures):
+                    i = futures[fut]
+                    score = fut.result()
+                    self.store.put_news_score(_news_key(news[i]), symbol, score.label, score.confidence)
+                    results[i] = {"label": score.label, "confidence": score.confidence}
+        return [r for r in results if r is not None]
+
     def news_query(self, symbol: str) -> str | None:
         """新闻检索词：自选股中文名（含中文）优先，否则用代码。
 
@@ -154,18 +179,15 @@ class Workbench:
         except Exception:  # noqa: BLE001 - 技术面降级，舆情/热度维度照常
             kline = None
 
-        scored_news: list[dict] = []
-        for item in news:
-            s = self.score_news_cached(item, symbol)
-            scored_news.append(
-                {
-                    "title": item.get("title", ""),
-                    "url": item.get("url", "") or "",
-                    "ts": item.get("ts", "") or "",
-                    "label": s["label"],
-                    "confidence": s["confidence"],
-                }
-            )
+        scored_news = [
+            {
+                "title": item.get("title", ""),
+                "url": item.get("url", "") or "",
+                "ts": item.get("ts", "") or "",
+                **s,
+            }
+            for item, s in zip(news, self.score_news_batch(news, symbol))
+        ]
         bull = sum(1 for n in scored_news if n["label"] == "利好")
         bear = sum(1 for n in scored_news if n["label"] == "利空")
         neutral = sum(1 for n in scored_news if n["label"] == "中性")

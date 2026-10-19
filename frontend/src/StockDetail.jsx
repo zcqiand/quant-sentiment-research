@@ -34,7 +34,7 @@ export default function StockDetail({ symbol, onBack }) {
       </div>
     )
   }
-  if (!detail) return <div className="detail">加载中…</div>
+  if (!detail) return <div className="detail">加载中…（首次研究该股需并行给新闻打分，约十几秒；再点就是缓存秒开）</div>
 
   const ind = detail.indicators || {}
   const latest = detail.latest
