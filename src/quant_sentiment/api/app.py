@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .. import conditions as cd
+from .. import hist_analysis as ha
 from ..gateway import _offline_active, fetch_kline, fetch_stock_name
 from ..screener import fetch_quotes, rows_cached
 from ..store import Store
@@ -72,6 +73,12 @@ class RuleIn(BaseModel):
 class RuleSaveIn(BaseModel):
     name: str = Field(min_length=1)
     rule: RuleIn
+
+
+class HistIn(BaseModel):
+    rule: RuleIn
+    asof: str = Field(min_length=8, max_length=10)
+    kline_limit: int = Field(default=300, ge=10, le=1000)
 
 
 def _default_store() -> Store:
@@ -188,6 +195,19 @@ def create_app(store: Store | None = None, cache_dir: str | None = None) -> Fast
             raise HTTPException(422, str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"回测失败：{exc}") from exc
+
+    @app.post("/api/hist_screen")
+    def hist_screen(body: HistIn) -> dict:
+        spec = body.rule.model_dump()
+        errors = cd.validate_rule(spec)
+        if errors:
+            raise HTTPException(422, "；".join(errors))
+        try:
+            return ha.run_hist_screen(spec, body.asof, cache_dir, body.kline_limit)
+        except ValueError as exc:  # 泄漏拒绝 / 日期非法
+            raise HTTPException(422, str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - 数据源故障统一 502
+            raise HTTPException(502, f"历史选股分析失败：{exc}") from exc
 
     # ---- 选股规则保存（版本保留） ----
 

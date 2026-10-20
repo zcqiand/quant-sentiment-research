@@ -152,6 +152,44 @@ def test_backtest_endpoint(monkeypatch, tmp_path):
     assert resp.json()["stats"]["n"] == 25
 
 
+def test_hist_screen_endpoint(monkeypatch, tmp_path):
+    store = Store(str(tmp_path / "wb.db"))
+    client = TestClient(create_app(store=store, cache_dir=str(tmp_path)))
+    kline_rule = {"logic": "all", "conditions": [{"metric": "above_ma20", "op": "eq", "value": 1}]}
+
+    # 财务条件 → 422 防未来数据泄漏（发生在拉数据之前）
+    resp = client.post("/api/hist_screen",
+                       json={"rule": {"conditions": [{"metric": "roe", "op": ">=", "value": 10}]},
+                             "asof": "2026-06-30"})
+    assert resp.status_code == 422
+    assert "泄漏" in resp.json()["detail"]
+
+    # 非法日期 → 422
+    resp = client.post("/api/hist_screen", json={"rule": kline_rule, "asof": "2099-01-01"})
+    assert resp.status_code == 422
+    assert "早于今天" in resp.json()["detail"]
+
+    # 正常路径
+    def fake_run_hist(rule, asof, cache_dir, kline_limit=300):
+        assert cache_dir == str(tmp_path)
+        return {"asof": asof, "universe": 3, "count": 1, "kline_missing": 1, "no_entry": 0,
+                "incomplete": {"20": 0, "60": 1, "120": 1},
+                "benchmark": {"20": 1.2, "60": None, "120": None},
+                "horizons": {"20": {"n": 1, "mean": 5.0, "median": 5.0, "win_rate": 1.0, "excess_mean": 3.8},
+                             "60": {"n": 0, "mean": None, "median": None, "win_rate": None, "excess_mean": None},
+                             "120": {"n": 0, "mean": None, "median": None, "win_rate": None, "excess_mean": None}},
+                "items": [{"code": "600001", "name": "上涨股", "price": 69.0,
+                           "entry_close": 70.0, "ret20": 5.0, "ret60": None, "ret120": None}],
+                "notes": ["幸存者偏差…"], "n_stocks": 3, "ran_at": "2026-10-20T10:00:00"}
+
+    monkeypatch.setattr("quant_sentiment.hist_analysis.run_hist_screen", fake_run_hist)
+    resp = client.post("/api/hist_screen", json={"rule": kline_rule, "asof": "2026-06-30"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 1 and body["items"][0]["ret20"] == 5.0
+    assert body["horizons"]["20"]["win_rate"] == 1.0
+
+
 def test_rules_crud_endpoint(tmp_path):
     store = Store(str(tmp_path / "wb.db"))
     client = TestClient(create_app(store=store, cache_dir=str(tmp_path)))
