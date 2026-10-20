@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api.js'
 
 // ---- 小工具 ----
@@ -245,6 +245,13 @@ export default function Screener({ onOpenStock }) {
   const [added, setAdded] = useState({})
   const [draft, setDraft] = useState(null) // {name, originName?, spec} 编辑器打开时非空
   const [hist, setHist] = useState({ open: false, date: defaultHistDate(), data: null, busy: false, err: null })
+  const histRef = useRef(null) // 面板在结果表之后、页面底部——点开要滚过去，不然像「没反应」
+
+  const toggleHist = () => {
+    const open = !hist.open
+    setHist((h) => ({ ...h, open }))
+    if (open) setTimeout(() => histRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80)
+  }
 
   useEffect(() => {
     api.metrics().then((b) => setMetrics(b.metrics)).catch((e) => setMsg({ kind: 'err', text: e.message }))
@@ -401,8 +408,7 @@ export default function Screener({ onOpenStock }) {
           <button className="nav" onClick={runBacktest} disabled={!!busy}>
             {busy === 'bt' ? '回测中…' : '📊 回测验证'}
           </button>
-          <button className={hist.open ? 'nav active' : 'nav'}
-                  onClick={() => setHist((h) => ({ ...h, open: !h.open }))}>
+          <button className={hist.open ? 'nav active' : 'nav'} onClick={toggleHist}>
             📅 历史验证
           </button>
           {!draft && <button className="primary" onClick={startEdit}>✏️ 编辑条件</button>}
@@ -537,7 +543,9 @@ export default function Screener({ onOpenStock }) {
         <BacktestCard bt={bt} />
 
         {hist.open && (
-          <HistPanel spec={draft?.spec || current.spec} hist={hist} setHist={setHist} />
+          <div ref={histRef}>
+            <HistPanel spec={draft?.spec || current.spec} hist={hist} setHist={setHist} />
+          </div>
         )}
 
         {result && result.manual_review?.length > 0 && result.count > 0 && (
