@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { api } from './api.js'
 
 const TABS = [
-  { kind: 'whitehorse', label: '白马价值 TOP20', hint: '选价值成长：估值合理 + 高 ROE + 低负债 + 现金流扎实' },
+  { kind: 'whitehorse', label: '白马价值 TOP20', hint: '榜单只是初筛池，排序=研究优先级。三检：季报增速>15%（业绩没塌）· PE五年分位<40%（不追高）· 站上60日线（不接飞刀）；⚠ 警报=周期顶/后视镜/昙花一现/价值陷阱。口诀：榜单选出好公司，趋势找准买卖点，估值决定安全边，业绩才是硬道理' },
   { kind: 'dividend', label: '高股息防守 TOP20', hint: '选防守：高股息 + 低 PB + 盈利为正 + 现金流扎实' },
   { kind: 'buyindex', label: '买入指数 TOP20', hint: '五步判断高ROE股：持续性/杠杆/估值(PEG+分位)/现金流/行业' },
 ]
@@ -53,6 +53,7 @@ export default function Screener({ onOpenStock }) {
 
   const isBuy = kind === 'buyindex'
   const isDiv = kind === 'dividend'
+  const isWhite = kind === 'whitehorse'
   const tab = TABS.find((t) => t.kind === kind)
   const colCount = isBuy ? 10 : 9
 
@@ -101,6 +102,10 @@ export default function Screener({ onOpenStock }) {
                 <th>PB</th>
                 {isDiv ? <th title="近三年年报每股股利均值/现价">均值股息率%</th> : <th>ROE%</th>}
                 {isDiv ? <th title="最新年度每股股利/现价">最新股息率%</th> : null}
+                {isWhite ? <th title="最新已披露季报净利润同比增速%——后视镜也要最新的">最新增速%</th> : null}
+                {isWhite ? <th title="当前PE在近五年的分位，<40% 过检验">PE分位%</th> : null}
+                {isWhite ? <th title="股价站上60日线且MA60向上=不接飞刀">趋势</th> : null}
+                {isWhite ? <th title="检验1 增速>15% · 检验2 分位<40% · 检验3 站上60日线">三检</th> : null}
                 {isDiv ? null : <th>负债率%</th>}
                 <th>3年OCF(亿)</th>
                 <th>市值(亿)</th>
@@ -112,7 +117,14 @@ export default function Screener({ onOpenStock }) {
         <tbody>
           {(data?.items || []).map((r) => (
             <tr key={r.code} className="clickable" onClick={() => onOpenStock(r.code)}>
-              <td className="sym">{r.code} {r.name}</td>
+              <td className="sym">
+                {r.code} {r.name}
+                {(r.warnings || []).length > 0 && (
+                  <span className="warn-mark" title={(r.warnings || []).map((w) => w.text).join('\n')}>
+                    ⚠{r.warnings.length}
+                  </span>
+                )}
+              </td>
               {isBuy && (
                 <td>
                   <span className={`score ${r.buy_index >= 65 ? 'score-up' : r.buy_index < 40 ? 'score-down' : ''}`}>
@@ -145,6 +157,33 @@ export default function Screener({ onOpenStock }) {
                 <>
                   <td>{r.pb?.toFixed(2)}</td>
                   {isDiv ? <td className="up">{r.div_yield?.toFixed(2)}</td> : <td className="up">{r.roe?.toFixed(2)}</td>}
+                  {isWhite ? (
+                    <td className={r.quarter_growth != null && r.quarter_growth < 0 ? 'down' : r.quarter_growth != null && r.quarter_growth > 15 ? 'up' : ''}>
+                      {r.quarter_growth?.toFixed(1) ?? '—'}
+                    </td>
+                  ) : null}
+                  {isWhite ? (
+                    <td className={r.pe_pct != null && r.pe_pct < 40 ? 'up' : r.pe_pct != null && r.pe_pct >= 80 ? 'down' : ''}>
+                      {r.pe_pct ?? '—'}
+                    </td>
+                  ) : null}
+                  {isWhite ? (
+                    <td title={r.trend ? `MA60 ${r.trend.above ? '上方' : '下方'} · ${r.trend.rising ? '向上' : '走平/向下'}${r.trend.above_ma250 ? ' · 年线上方' : ' · 年线下方'}` : '数据缺'}>
+                      {r.trend ? (r.trend.ok ? <span className="up">60日线上↑</span> : <span className="down">{r.trend.above ? '线上走弱' : '60日线下↓'}</span>) : '—'}
+                    </td>
+                  ) : null}
+                  {isWhite ? (
+                    <td>
+                      <span className="check-dots">
+                        {['growth', 'valuation', 'trend'].map((k) => (
+                          <em key={k} className={r.checks?.[k] === true ? 'up' : r.checks?.[k] === false ? 'down' : ''}>
+                            ●
+                          </em>
+                        ))}
+                      </span>
+                      <small className="verdict">{r.verdict}</small>
+                    </td>
+                  ) : null}
                   {isDiv ? (
                     <td className={r.div_yield_latest >= r.div_yield ? 'up' : 'down'} title={r.div_yield_latest < r.div_yield ? '分红在降，小心均值幻觉' : '分红在涨'}>
                       {r.div_yield_latest?.toFixed(2)}

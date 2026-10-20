@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 
@@ -382,6 +383,174 @@ def run_buy_index(rows: list[dict], cache_dir: str | None, refresh: bool = False
     }
 
 
+# ---- 白马决策层：一问三看三检验 ----
+#
+# 榜单只是初筛池（过去的成绩单）；这一层把静态指标转成动态检验：
+#   检验1 增速：最新季报净利润增速 > 15%（排除业绩塌房——后视镜数据必须最新）
+#   检验2 分位：PE 处于近五年中低位（<40%，排除高估值风险）
+#   检验3 趋势：股价站上 60 日线且 MA60 向上（排除右侧阴跌——不接飞刀）
+# 另打四类陷阱警报（周期顶/后视镜/昙花一现/价值陷阱）。研究参考，非买卖指令。
+
+def latest_quarter_period(today: date | None = None) -> str:
+    """最近已披露完整的季报报告期（披露缓冲：年报/一季报 4/30、中报 8/31、三季报 10/31）。"""
+    today = today or date.today()
+    y = today.year
+    md = (today.month, today.day)
+    if md >= (11, 1):
+        return f"{y}0930"
+    if md >= (9, 1):
+        return f"{y}0630"
+    if md >= (5, 1):
+        return f"{y - 1}1231"
+    return f"{y - 1}0930"
+
+
+def _fetch_quarter_growth(period: str) -> dict[str, float]:
+    """最新季报净利润同比增长 {code: %}（东财业绩报表整表）。"""
+    import akshare as ak
+
+    df = ak.stock_yjbb_em(date=period)
+    col = next(
+        (c for c in df.columns if "净利润同比增长" in c and "扣非" not in c),
+        next((c for c in df.columns if "同比增长" in c and "扣非" not in c and "营收" not in c and "收入" not in c), None),
+    )
+    if col is None:
+        raise ValueError(f"yjbb 找不到净利润增速列：{list(df.columns)}")
+    out: dict[str, float] = {}
+    for c, g in zip(df["股票代码"], df[col]):
+        try:
+            f = float(g)
+            if f == f:
+                out[str(c)] = f
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def quarter_growth_cached(codes: list[str], cache_dir: str | None) -> dict[str, float]:
+    """季报增速按天缓存（整表一次拉取，不逐股请求）。"""
+    if not cache_dir:
+        return _fetch_quarter_growth(latest_quarter_period())
+    path = Path(cache_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    cache_file = path / f"quarter_growth_{date.today().isoformat()}.json"
+    if cache_file.exists() and time.time() - cache_file.stat().st_mtime < _PCT_TTL:
+        return json.loads(cache_file.read_text(encoding="utf-8"))
+    data = _fetch_quarter_growth(latest_quarter_period())
+    cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return data
+
+
+def trend_check(symbol: str, cache_dir: str | None) -> dict | None:
+    """MA60 趋势检验：站上且 MA60 向上 → ok=True；数据不足/失败 → None。
+
+    附带 above_ma250（年线上下）供前端展示。
+    """
+    from .gateway import fetch_kline
+
+    try:
+        k = fetch_kline(symbol, days=300, cache_dir=cache_dir)
+        closes = [float(x) for x in k["close"].tolist()]
+    except Exception:  # noqa: BLE001 - 趋势数据拿不到不算检验失败，置缺
+        return None
+    if len(closes) < 66:
+        return None
+    ma60 = sum(closes[-60:]) / 60
+    ma60_prev = sum(closes[-66:-6]) / 60
+    above = closes[-1] > ma60
+    rising = ma60 > ma60_prev
+    return {
+        "above": above,
+        "rising": rising,
+        "ok": above and rising,
+        "above_ma250": len(closes) >= 250 and closes[-1] > sum(closes[-250:]) / 250,
+    }
+
+
+def decision_eval(
+    row: dict,
+    quarter_growth: float | None,
+    trend: dict | None,
+    pe_pct: float | None,
+    industry_name: str | None,
+) -> dict:
+    """三检验 + 四警报（纯函数）。checks 值 True/False/None（None=数据缺，不算过）。"""
+    checks = {
+        "growth": None if quarter_growth is None else quarter_growth > 15,
+        "valuation": None if pe_pct is None else pe_pct < 40,
+        "trend": None if trend is None else bool(trend.get("ok")),
+    }
+    passed = sum(1 for v in checks.values() if v is True)
+
+    warnings: list[dict] = []
+    roe_hist = [float(v) for v in (row.get("roe_hist") or {}).values() if v is not None]
+    peak = max(roe_hist) if roe_hist else None
+    if (
+        classify_industry(industry_name) == "cyclical"
+        and peak
+        and row.get("roe") is not None
+        and row["roe"] >= 0.9 * peak
+    ):
+        warnings.append({"kind": "cycle_top", "text": "强周期行业且 ROE 处 5 年高位——警惕周期顶陷阱，看商品价格别看 PE"})
+    if (quarter_growth is not None and quarter_growth < 0) or (
+        peak and row.get("roe") is not None and row["roe"] < 0.7 * peak
+    ):
+        warnings.append({"kind": "rearview", "text": "最新增速为负或 ROE 自峰值大幅回落——后视镜警报"})
+    if roe_hist and min(roe_hist) < 10:
+        warnings.append({"kind": "flash", "text": "5 年 ROE 最低值 < 10——昙花一现，持续性存疑"})
+    if row.get("pe_ttm") is not None and row["pe_ttm"] < 10 and row.get("growth") is not None and row["growth"] < 0:
+        warnings.append({"kind": "value_trap", "text": "低 PE + 增速为负——市场可能在计价你还没找到的利空（价值陷阱）"})
+
+    if passed == 3:
+        verdict = "三检全过·可进入建仓研究"
+    elif passed == 2:
+        verdict = "两项过·观察等待"
+    else:
+        verdict = "暂回避研究"
+    return {"checks": checks, "passed": passed, "warnings": warnings, "verdict": verdict}
+
+
+def decision_enrich(items: list[dict], cache_dir: str | None) -> list[dict]:
+    """白马榜 → 决策卡：逐股三检验 + 警报 + 行业标签，按检验通过数重排。
+
+    任一数据源失败不废整体：缺的检验置 None（不算过）。
+    """
+    if not items:
+        return items
+    codes = [r["code"] for r in items]
+    try:
+        pct_map: dict = percentiles_cached(codes, cache_dir)
+    except Exception:  # noqa: BLE001
+        pct_map = {}
+    try:
+        ind_map: dict = industry_cached([(c, _market_suffix(c)) for c in codes], cache_dir)
+    except Exception:  # noqa: BLE001
+        ind_map = {}
+    try:
+        growth_map: dict = quarter_growth_cached(codes, cache_dir)
+    except Exception:  # noqa: BLE001
+        growth_map = {}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        trends = list(pool.map(lambda r: trend_check(r["code"], cache_dir), items))
+
+    out = []
+    for r, trend in zip(items, trends):
+        code = r["code"]
+        ev = decision_eval(r, growth_map.get(code), trend, pct_map.get(code), ind_map.get(code))
+        out.append(
+            {
+                **r,
+                "industry": ind_map.get(code),
+                "quarter_growth": growth_map.get(code),
+                "pe_pct": pct_map.get(code),
+                "trend": trend,
+                **ev,
+            }
+        )
+    out.sort(key=lambda x: (-x["passed"], -(x.get("roe") or 0)))
+    return out
+
+
 __all__ = [
     "run_buy_index",
     "buy_index_total",
@@ -399,6 +568,11 @@ __all__ = [
     "industry_cached",
     "fetch_pe_percentile",
     "fetch_industry",
+    "latest_quarter_period",
+    "quarter_growth_cached",
+    "trend_check",
+    "decision_eval",
+    "decision_enrich",
     "WEIGHTS",
     "BUYINDEX_CALIBER",
 ]

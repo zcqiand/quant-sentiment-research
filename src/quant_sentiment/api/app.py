@@ -198,13 +198,21 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
 
     @app.get("/api/screener/{kind}")
     def screener(kind: str, refresh: bool = False):
-        """选股器：whitehorse（白马价值）/ dividend（高股息）/ buyindex（买入指数）。"""
+        """选股器：whitehorse（白马价值·三检决策层）/ dividend（高股息）/ buyindex（买入指数）。"""
         data_dir = wb.cache_dir or str(_DATA_DIR)
         try:
             if kind == "buyindex":
                 rows = screener_module.rows_cached(data_dir, refresh)
                 return buy_index_module.run_buy_index(rows, data_dir)
-            return screener_module.run_screen(kind, data_dir, refresh)
+            payload = screener_module.run_screen(kind, data_dir, refresh)
+            if kind == "whitehorse":
+                # 决策层：榜单=初筛池，三检验+陷阱警报给出研究优先级（失败降级回纯榜单）
+                try:
+                    payload["items"] = buy_index_module.decision_enrich(payload["items"], data_dir)
+                    payload["caliber"] += " · 决策层：季报增速>15% + PE五年分位<40% + 站上60日线且向上"
+                except Exception:  # noqa: BLE001 - 决策层故障不废初筛榜单
+                    pass
+            return payload
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - 数据源抖动统一 502

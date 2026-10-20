@@ -127,3 +127,91 @@ def test_buy_label():
     assert bi.buy_label(55) == "一般"
     assert bi.buy_label(40) == "偏弱"
     assert bi.buy_label(20) == "回避研究"
+
+
+# ---- 白马决策层：一问三看三检验 ----
+
+def test_latest_quarter_period():
+    from datetime import date
+
+    assert bi.latest_quarter_period(date(2026, 10, 20)) == "20260630"  # 三季报10/31才披完
+    assert bi.latest_quarter_period(date(2026, 11, 1)) == "20260930"
+    assert bi.latest_quarter_period(date(2026, 9, 1)) == "20260630"
+    assert bi.latest_quarter_period(date(2026, 5, 1)) == "20251231"  # 年报4/30披完
+    assert bi.latest_quarter_period(date(2026, 4, 30)) == "20250930"
+
+
+def _wr(**kw):
+    """构造一行白马榜条目（roe_hist 键近→远）。"""
+    base = {
+        "code": "600001", "name": "甲", "roe": 18.0, "pe_ttm": 15.0,
+        "roe_hist": {"2025": 18.0, "2024": 17.5, "2023": 17.0, "2022": 18.5, "2021": 16.0},
+        "growth": 20.0,
+    }
+    base.update(kw)
+    return base
+
+
+_GOOD_TREND = {"ok": True, "above": True, "rising": True, "above_ma250": True}
+
+
+def test_decision_eval_all_pass():
+    out = bi.decision_eval(_wr(), 20.0, _GOOD_TREND, 30.0, "食品饮料-白酒")
+    assert out["checks"] == {"growth": True, "valuation": True, "trend": True}
+    assert out["passed"] == 3
+    assert "全过" in out["verdict"]
+    assert out["warnings"] == []
+
+
+def test_decision_eval_growth_fail_and_rearview_warning():
+    out = bi.decision_eval(_wr(), -3.0, _GOOD_TREND, 30.0, "食品饮料-白酒")
+    assert out["checks"]["growth"] is False
+    assert out["passed"] == 2
+    assert any(w["kind"] == "rearview" for w in out["warnings"])  # 增速为负=后视镜警报
+
+
+def test_decision_eval_missing_data_not_fail_pass():
+    out = bi.decision_eval(_wr(), None, None, None, None)  # 全缺数据：不算过也不算假警报
+    assert out["checks"] == {"growth": None, "valuation": None, "trend": None}
+    assert out["passed"] == 0
+
+
+def test_decision_eval_warnings_kinds():
+    # 周期顶：强周期行业 + ROE 处于 5 年高位
+    cyc = _wr(industry_input=True, roe=30.0,
+              roe_hist={"2025": 30.0, "2024": 12.0, "2023": 11.0, "2022": 12.5, "2021": 11.5})
+    out = bi.decision_eval(cyc, 20.0, _GOOD_TREND, 30.0, "贵金属-黄金")
+    assert any(w["kind"] == "cycle_top" for w in out["warnings"])
+
+    # 昙花一现：5 年 ROE 最低 < 10
+    flash = _wr(roe_hist={"2025": 25.0, "2024": 8.0, "2023": 6.0, "2022": 7.5, "2021": 7.0})
+    out = bi.decision_eval(flash, 20.0, _GOOD_TREND, 30.0, "食品饮料-白酒")
+    assert any(w["kind"] == "flash" for w in out["warnings"])
+
+    # 价值陷阱：PE < 10 且年报增速为负
+    trap = _wr(pe_ttm=8.0, growth=-5.0)
+    out = bi.decision_eval(trap, 20.0, _GOOD_TREND, 30.0, "食品饮料-白酒")
+    assert any(w["kind"] == "value_trap" for w in out["warnings"])
+
+
+def test_decision_enrich_resorts_by_passed(tmp_path, monkeypatch):
+    """决策层重排：三检全过的排前面；崩塌增速股被降位+打警报。"""
+    import pandas as pd
+
+    clean = _wr(code="600001", name="干净")
+    sick = _wr(code="600002", name="病号", roe=25.0,
+               roe_hist={"2025": 25.0, "2024": 24.0, "2023": 24.5, "2022": 25.5, "2021": 24.0})
+
+    monkeypatch.setattr(bi, "percentiles_cached", lambda codes, cache_dir: {c: 30.0 for c in codes})
+    monkeypatch.setattr(bi, "industry_cached", lambda pairs, cache_dir: {c: "食品饮料-白酒" for c, _ in pairs})
+    monkeypatch.setattr(bi, "quarter_growth_cached",
+                        lambda codes, cache_dir: {"600001": 20.0, "600002": -5.0})
+    kline = pd.DataFrame({"close": [100.0 + i for i in range(300)]})
+    monkeypatch.setattr("quant_sentiment.gateway.fetch_kline",
+                        lambda symbol, days=300, cache_dir=None: kline)
+
+    out = bi.decision_enrich([sick, clean], str(tmp_path))
+    assert out[0]["code"] == "600001"  # 干净股（增速20→检验过）排前
+    assert out[0]["passed"] == 3
+    assert out[1]["warnings"]  # 病号：增速-5 → growth 检验不过 + 后视镜警报
+    assert out[1]["checks"]["growth"] is False

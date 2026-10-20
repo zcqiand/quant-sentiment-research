@@ -98,6 +98,12 @@ input {
 
 .score-btn { margin-left: 10px; font-size: 12px; padding: 4px 10px; }
 
+.warn-mark { margin-left: 6px; color: var(--hot); font-size: 11px; cursor: help; }
+.check-dots em { color: var(--muted); margin-right: 2px; font-style: normal; }
+.check-dots em.up { color: var(--up); }
+.check-dots em.down { color: var(--down); }
+.verdict { display: block; color: var(--muted); font-size: 11px; }
+
 .hint { color: var(--muted); font-size: 12px; }
 .foot { color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); margin-top: 32px; padding: 14px 0 24px; }
 

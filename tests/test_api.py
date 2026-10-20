@@ -171,9 +171,11 @@ def _screener_rows():
 
 
 def test_screener_endpoints(tmp_path, monkeypatch):
+    from quant_sentiment import buy_index as bi_mod
     from quant_sentiment import screener
 
     monkeypatch.setattr(screener, "rows_cached", lambda cache_dir, refresh=False: _screener_rows())
+    monkeypatch.setattr(bi_mod, "decision_enrich", lambda items, cache_dir: items)  # 决策层在专项测试里测
     client = _client(tmp_path)
 
     white = client.get("/api/screener/whitehorse").json()
@@ -184,6 +186,29 @@ def test_screener_endpoints(tmp_path, monkeypatch):
     div = client.get("/api/screener/dividend").json()
     assert div["count"] == 2
     assert div["items"][0]["div_yield"] == 8.0  # 股息率降序
+
+
+def test_whitehorse_decision_layer(tmp_path, monkeypatch):
+    """白马榜决策层：三检验+警报进 items，caliber 带决策层说明。"""
+    from quant_sentiment import buy_index as bi_mod
+    from quant_sentiment import screener
+
+    monkeypatch.setattr(screener, "rows_cached", lambda cache_dir, refresh=False: _screener_rows())
+
+    def fake_enrich(items, cache_dir):
+        return [
+            {**r, "passed": 3, "verdict": "三检全过·可进入建仓研究",
+             "checks": {"growth": True, "valuation": True, "trend": True}, "warnings": []}
+            for r in items
+        ]
+
+    monkeypatch.setattr(bi_mod, "decision_enrich", fake_enrich)
+    client = _client(tmp_path)
+
+    body = client.get("/api/screener/whitehorse").json()
+    assert body["items"][0]["passed"] == 3
+    assert body["items"][0]["verdict"]
+    assert "决策层" in body["caliber"]
 
 
 def test_screener_failure_502(tmp_path, monkeypatch):
