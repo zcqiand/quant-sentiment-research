@@ -157,12 +157,15 @@ def test_hist_screen_endpoint(monkeypatch, tmp_path):
     client = TestClient(create_app(store=store, cache_dir=str(tmp_path)))
     kline_rule = {"logic": "all", "conditions": [{"metric": "above_ma20", "op": "eq", "value": 1}]}
 
-    # 财务条件 → 422 防未来数据泄漏（发生在拉数据之前）
+    # 慢指标条件（PE分位无历史快照）→ 422 防未来数据泄漏（发生在拉数据之前）
     resp = client.post("/api/hist_screen",
-                       json={"rule": {"conditions": [{"metric": "roe", "op": ">=", "value": 10}]},
+                       json={"rule": {"conditions": [{"metric": "pe_pct", "op": ">=", "value": 80}]},
                              "asof": "2026-06-30"})
     assert resp.status_code == 422
     assert "泄漏" in resp.json()["detail"]
+
+    # 财务条件已支持（公告日期门控快照）→ 正常进编排层（此处在编排层打桩前的直通校验由
+    # run_hist_screen 的桩承接，见 fake_run_hist）
 
     # 非法日期 → 422
     resp = client.post("/api/hist_screen", json={"rule": kline_rule, "asof": "2099-01-01"})

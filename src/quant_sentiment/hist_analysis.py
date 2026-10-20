@@ -1,34 +1,39 @@
 """功能A：历史选股表现分析（point-in-time 筛选 + 前瞻收益统计）。
 
-用户选一个历史日期，软件用**当时可得**的数据（K线截至该日）筛选股票，
-统计入选股持有 20/60/120 个交易日的收益率，并对照同期市场基准。
+用户选一个历史日期，软件用**当时可得**的数据筛选股票，统计入选股持有
+20/60/120 个交易日的收益率，并对照同期市场基准。
 
 诚实纪律（与 conditions 回测同源）：
-- 仅纯 K线规则——财务/估值指标的历史横截面快照未实现，重放即未来数据泄漏，
-  rule_backtestable 拒绝；
+- K线用截至历史日的前缀；财务/估值指标走 fin_snapshot 公告日期门控的历史快照
+  （公告日 ≤ 历史日才计入）——没有历史化的指标由 hist_supportable 拒绝；
 - 入场 = 信号日次日收盘（与回测纪律一致）；
 - 回看窗不足的 K线按「数据缺失」处理，不当 0、不误判；
-- 幸存者偏差（股票池是今天仍在市的）、期限不足、无分红无成本，全部显式透出。
+- 幸存者偏差（股票池是今天仍在市的）、期限不足、无分红无成本、历史PE/PB口径，
+  全部显式透出。
 """
 from __future__ import annotations
 
 from datetime import date, datetime
 
+import numpy as np
 import pandas as pd
 
 from .conditions import (
+    METRICS,
     _fetch_klines,
     _signal_start,
     _tradable_rows,
     compute_kline_metrics,
     fetch_market_kline,
-    rule_backtestable,
     screen,
     validate_rule,
 )
+from .fin_snapshot import fetch_hist_fundamentals, hist_supportable
 from .screener import rows_cached
 
 HORIZONS = (20, 60, 120)
+
+_LISTED_2Y_BARS = 480  # 与 conditions.listed_2y 同一口径（约2年交易日）
 
 
 def _bench_kline() -> pd.DataFrame:
@@ -70,18 +75,26 @@ def _horizon_stats(rets: list[float], bench: dict | None) -> dict:
 
 
 def analyze_hist(rule: dict, asof: str, klines: dict[str, pd.DataFrame],
-                 rows: list[dict], bench: pd.DataFrame | None = None) -> dict:
-    """纯函数部分：历史截面筛选 + 前瞻收益统计。klines={code: 全量日K}。"""
+                 rows: list[dict], bench: pd.DataFrame | None = None,
+                 fundamentals: dict[str, dict] | None = None) -> dict:
+    """纯函数部分：历史截面筛选 + 前瞻收益统计。klines={code: 全量日K}。
+
+    fundamentals={code: 快照}（fin_snapshot.build_snapshots 产物，含 eps_ttm/bps）
+    时，PE/PB=当时收盘÷快照值、流通市值=当前流通股本×当时价格（近似，notes 标注）。
+    """
     errors = validate_rule(rule)
     if errors:
         raise ValueError("；".join(errors))
-    ok, why = rule_backtestable(rule)
+    ok, why = hist_supportable(rule)
     if not ok:
         raise ValueError(why)
     ts = _parse_asof(asof)
 
     conds = rule["conditions"]
     need = _signal_start(conds)
+    metrics = {c["metric"] for c in conds}
+    if rule.get("rank"):
+        metrics.add(rule["rank"]["metric"])
     meta = {r["code"]: r for r in rows}
 
     universe: list[dict] = []
@@ -101,10 +114,25 @@ def analyze_hist(rule: dict, asof: str, klines: dict[str, pd.DataFrame],
             continue
         prefix = df.iloc[: i + 1].reset_index(drop=True)
         vals[code] = compute_kline_metrics(prefix)
+        vals[code]["listed_2y"] = 1.0 if len(prefix) >= _LISTED_2Y_BARS else 0.0
         closes = [float(c) for c in df["close"]]
-        row = meta.get(code, {})
-        universe.append({"code": code, "name": row.get("name", ""),
-                         "industry": row.get("industry"), "price": closes[i]})
+        row = dict(meta.get(code, {}))
+        snap = (fundamentals or {}).get(code) or {}
+        # 历史行覆盖：行业/财务用公告门控快照，PE/PB=当时收盘÷快照EPS/BPS
+        for k in ("industry", "roe", "roe_hist", "growth", "revenue_growth", "debt_ratio"):
+            if k in snap:
+                row[k] = snap[k]
+        if snap.get("eps_ttm") is not None and closes[i] > 0:
+            row["pe_ttm"] = round(closes[i] / snap["eps_ttm"], 2)
+        if snap.get("bps") is not None and closes[i] > 0:
+            row["pb"] = round(closes[i] / snap["bps"], 2)
+        if ("float_mcap_yi" in metrics and row.get("float_mcap_yi") is not None
+                and row.get("price") and row["price"] > 0):
+            row["float_mcap_yi"] = round(row["float_mcap_yi"] * closes[i] / row["price"], 2)
+        row["code"] = code
+        row.setdefault("name", "")
+        row["price"] = closes[i]
+        universe.append(row)
         e = i + 1
         if e >= len(closes):
             # 信号日已是当时最后一根K线：无次日收盘可入场（入选后计入 no_entry）
@@ -143,6 +171,16 @@ def analyze_hist(rule: dict, asof: str, klines: dict[str, pd.DataFrame],
         "股票池为今日仍在市的标的，未含已退市/长停个股（幸存者偏差），整体结果偏乐观。",
         "仅统计价格收益，未计交易成本、滑点与分红；入选≠买入建议。",
     ]
+    fin_metrics = metrics & {"pe_ttm", "pb", "roe", "roe_mean3", "roe_min3",
+                             "growth", "revenue_growth", "debt_ratio", "industry"}
+    if fundamentals and fin_metrics:
+        notes.append("财务/估值指标为历史快照：公告日≤所选日期、或已过法定披露截止"
+                     "（年报次年4-30/中报8-31等）才计入；ROE/增速为年报口径，"
+                     "历史PE/PB=当时收盘÷历史EPS/BPS估算，与实时口径略有差异。")
+    elif fin_metrics:
+        notes.append("本结果未注入财务快照——含财务/估值条件的股票全部按数据缺失处理（不命中）。")
+    if fundamentals and "float_mcap_yi" in metrics:
+        notes.append("历史流通市值为近似值：当前流通股本×当时价格，股本变动未还原。")
     if kline_missing:
         notes.append(f"{kline_missing} 只在所选日期前K线不足（次新/未上市/无数据），按数据缺失处理，未计入筛选。")
     if no_entry:
@@ -166,19 +204,31 @@ def analyze_hist(rule: dict, asof: str, klines: dict[str, pd.DataFrame],
 
 def run_hist_screen(rule: dict, asof: str, cache_dir: str | None,
                     kline_limit: int = 300) -> dict:
-    """编排：先过纪律门 → 候选池 → 流动性前 kline_limit 拉K线 → 历史截面分析。"""
+    """编排：纪律门 → 候选池 → 财务快照（公告门控）→ 加长K线窗 → 历史截面分析。"""
     _parse_asof(asof)  # 日期先验，别拉完数据才报格式错
-    ok, why = rule_backtestable(rule)
+    ok, why = hist_supportable(rule)
     if not ok:
         raise ValueError(why)
+    metrics = {c["metric"] for c in rule["conditions"]}
+    if rule.get("rank"):
+        metrics.add(rule["rank"]["metric"])
+    # K线窗 = asof 至今的交易日 + 规则所需最长回看（listed_2y 需 480 根前缀）+ 前瞻缓冲
+    gap = int(np.busday_count(_parse_asof(asof).date(), date.today()))
+    extra = _LISTED_2Y_BARS if "listed_2y" in metrics else max(_signal_start(rule["conditions"]), 21)
+    bars = gap + extra + max(HORIZONS)
     rows = rows_cached(cache_dir)
     universe = _tradable_rows(rows)[:kline_limit]
-    klines = _fetch_klines([r["code"] for r in universe], cache_dir)
+    klines = _fetch_klines([r["code"] for r in universe], cache_dir, bars=bars)
+    fundamentals: dict[str, dict] | None = None
+    fund_warns: list[str] = []
+    if any(METRICS[m]["kind"] == "row" for m in metrics):
+        fundamentals, fund_warns = fetch_hist_fundamentals(asof, rule, cache_dir)
     try:
         bench = _bench_kline()
     except Exception:  # noqa: BLE001 — 基准拉不到不废整体，基准列记缺失
         bench = None
-    out = analyze_hist(rule, asof, klines, rows, bench)
+    out = analyze_hist(rule, asof, klines, rows, bench, fundamentals)
+    out["notes"].extend(fund_warns)  # 表拉取失败透出结果，不许静默瘸腿
     out["n_stocks"] = len(klines)
     out["ran_at"] = datetime.now().isoformat(timespec="seconds")
     return out

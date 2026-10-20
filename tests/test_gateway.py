@@ -6,7 +6,7 @@ from quant_sentiment.gateway import set_offline, fetch_kline
 def _fixtures(tmp_path):
     pd.DataFrame(
         {"date": ["2026-01-01", "2026-01-02"], "close": [10.0, 10.5]}
-    ).to_parquet(tmp_path / "kline_600000.parquet")
+    ).to_parquet(tmp_path / "kline_600000_5.parquet")
 
 
 def test_fetch_kline_offline_from_cache(tmp_path):
@@ -23,10 +23,10 @@ def test_kline_amount_column_passthrough(tmp_path):
     pd.DataFrame(
         {"date": ["2026-01-01", "2026-01-02"], "close": [10.0, 10.5],
          "成交额": [5e7, 6e7]}
-    ).to_parquet(tmp_path / "kline_600001.parquet")
+    ).to_parquet(tmp_path / "kline_600001_5.parquet")
     pd.DataFrame(
         {"date": ["2026-01-01", "2026-01-02"], "close": [10.0, 10.5]}
-    ).to_parquet(tmp_path / "kline_600000.parquet")
+    ).to_parquet(tmp_path / "kline_600000_5.parquet")
     df = fetch_kline("600001", days=5, cache_dir=str(tmp_path))
     assert "amount" in df.columns
     assert df["amount"].iloc[-1] == 6e7
@@ -133,7 +133,7 @@ def test_kline_online_ttl_cache(monkeypatch, tmp_path):
     gateway.fetch_kline("600000", days=5, cache_dir=str(tmp_path))
     assert len(tx_calls) == 1  # 第二次命中 TTL 缓存
 
-    path = tmp_path / "kline_600000.parquet"  # 缓存过期后重新抓
+    path = tmp_path / "kline_600000_5.parquet"  # 缓存过期后重新抓（键含 days）
     old = path.stat().st_mtime - 10_000
     os.utime(path, (old, old))
     gateway.fetch_kline("600000", days=5, cache_dir=str(tmp_path))

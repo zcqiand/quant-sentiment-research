@@ -5,7 +5,7 @@
 一个离线模式：当 ``_OFFLINE`` 为真、或 akshare 不可导入时，从
 ``cache_dir`` 读取本地 parquet / json fixture。
 
-约定：K 线 ``{cache_dir}/kline_{symbol}.parquet``，至少含 ``close`` 列。
+约定：K 线 ``{cache_dir}/kline_{symbol}_{days}.parquet``，至少含 ``close`` 列。
 """
 
 from __future__ import annotations
@@ -36,10 +36,14 @@ def _offline_active() -> bool:
     return False
 
 
-def _kline_cache_path(cache_dir: str, symbol: str) -> str:
+def _kline_cache_path(cache_dir: str, symbol: str, days: int | None = None) -> str:
+    """K线缓存文件。键必须含 days：历史验证要 700+ 根前缀，若与 400 根共用一个
+    文件，tail(days) 会把长窗请求悄悄截短（listed_2y 会全错）。"""
     import os
 
-    return os.path.join(cache_dir, f"kline_{symbol}.parquet")
+    if days is None:
+        days = 400
+    return os.path.join(cache_dir, f"kline_{symbol}_{days}.parquet")
 
 
 _TENCENT_EXCHANGE_PREFIX = {"6": "sh", "0": "sz", "3": "sz", "4": "bj", "8": "bj", "9": "sh"}
@@ -130,7 +134,7 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
     返回 DataFrame 固定列：date/open/close/high/low/volume（英文列）。
 
     - 离线模式（``set_offline(True)`` 或 akshare 不可导入）：从
-      ``{cache_dir}/kline_{symbol}.parquet`` 读取，缺失则抛
+      ``{cache_dir}/kline_{symbol}_{days}.parquet`` 读取，缺失则抛
       ``FileNotFoundError`` 并给出清晰提示。
     - 在线模式：eastmoney 主源 → 腾讯备援（host 独立，防单源限流，
       2026-10-19 push2his 指纹级拉黑教训）；若给定 ``cache_dir`` 则写回
@@ -143,9 +147,9 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
     if _offline_active():
         if not cache_dir:
             raise FileNotFoundError(
-                f"离线模式下需要 cache_dir 来定位 kline_{symbol}.parquet"
+                f"离线模式下需要 cache_dir 来定位 kline_{symbol}_{days}.parquet"
             )
-        path = _kline_cache_path(cache_dir, symbol)
+        path = _kline_cache_path(cache_dir, symbol, days)
         try:
             df = pd.read_parquet(path)
         except FileNotFoundError as exc:  # pragma: no cover - 路径已校验
@@ -154,9 +158,9 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
             ) from exc
         return _standardize_kline(df).tail(days).reset_index(drop=True)
 
-    # 在线 TTL 缓存：新鲜 parquet 直接用，几分钟内反复点同一只秒回
+    # 在线 TTL 缓存：新鲜 parquet 直接用，几分钟内反复点同一只秒回（键含 days）
     if cache_dir:
-        path = _kline_cache_path(cache_dir, symbol)
+        path = _kline_cache_path(cache_dir, symbol, days)
         if os.path.exists(path) and time.time() - os.path.getmtime(path) < _KLINE_TTL_SECONDS:
             return pd.read_parquet(path).tail(days).reset_index(drop=True)
 
@@ -172,7 +176,7 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
             df = _standardize_kline(source(symbol, days)).tail(days).reset_index(drop=True)
             if cache_dir:
                 os.makedirs(cache_dir, exist_ok=True)
-                df.to_parquet(_kline_cache_path(cache_dir, symbol), index=False)
+                df.to_parquet(_kline_cache_path(cache_dir, symbol, days), index=False)
             return df
         except Exception as exc:  # noqa: BLE001 - 单源失败切下一源
             if source is _fetch_kline_eastmoney:

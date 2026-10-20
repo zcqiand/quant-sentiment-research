@@ -597,12 +597,16 @@ def _tradable_rows(rows: list[dict]) -> list[dict]:
     return sorted(tradable, key=lambda r: -r["turnover_wan"])
 
 
-def _fetch_klines(codes: list[str], cache_dir: str | None) -> dict[str, pd.DataFrame]:
-    """并发逐股拉K线（400根：指标用尾部、回测用全量），单股失败不废整体。"""
+def _fetch_klines(codes: list[str], cache_dir: str | None,
+                  bars: int = 400) -> dict[str, pd.DataFrame]:
+    """并发逐股拉K线（默认400根：指标用尾部、回测用全量），单股失败不废整体。
+
+    bars 可加大：历史验证要 asof 之前有足够前缀（listed_2y 需 480 根）。
+    """
 
     def _one(code: str):
         try:
-            return code, _stock_kline(code, 400, cache_dir)
+            return code, _stock_kline(code, bars, cache_dir)
         except Exception:  # noqa: BLE001
             return code, None
 
