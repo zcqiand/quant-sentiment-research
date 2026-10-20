@@ -255,7 +255,7 @@ export default function Screener({ onOpenStock }) {
     Promise.all([api.presets(), api.rules()])
       .then(([pb, rb]) => {
         setPlans([
-          ...pb.presets.map((p) => ({ id: `preset:${p.key}`, name: p.name, builtin: true, spec: p.rule })),
+          ...pb.presets.map((p) => ({ id: `preset:${p.key}`, name: p.name, builtin: true, desc: p.desc, spec: p.rule })),
           ...rb.rules.map((r) => ({ id: `rule:${r.name}`, name: r.name, builtin: false, version: r.version, spec: r.spec })),
         ])
       })
@@ -419,6 +419,7 @@ export default function Screener({ onOpenStock }) {
             )
           })}
         </p>
+        {current.desc && <p className="hint" style={{ margin: '0 0 10px' }}>📌 {current.desc}</p>}
 
         {/* 编辑器 */}
         {draft && (
