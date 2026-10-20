@@ -80,7 +80,7 @@ def test_metrics_endpoint(tmp_path):
     store = Store(str(tmp_path / "wb.db"))
     client = TestClient(create_app(store=store, cache_dir=str(tmp_path)))
     body = client.get("/api/metrics").json()
-    assert len(body["metrics"]) == 27
+    assert len(body["metrics"]) == 31
     m = body["metrics"][0]
     for key in ("key", "name", "category", "caliber", "kind", "ops", "unit"):
         assert key in m
@@ -92,7 +92,7 @@ def test_presets_endpoint(tmp_path):
     store = Store(str(tmp_path / "wb.db"))
     client = TestClient(create_app(store=store, cache_dir=str(tmp_path)))
     body = client.get("/api/presets").json()
-    assert [p["key"] for p in body["presets"]] == ["value", "quality", "trend"]
+    assert [p["key"] for p in body["presets"]] == ["roe_pe", "roe_pb", "small_quality", "low_vol"]
     assert all(p["rule"]["conditions"] for p in body["presets"])
 
 

@@ -50,8 +50,8 @@ def _row(**kw):
 # ---- 指标注册表 ----
 
 def test_metric_registry_shape():
-    """27 个指标、五大类、每个都带口径说明与来源类型。"""
-    assert len(cond.METRICS) == 27
+    """31 个指标、五大类、每个都带口径说明与来源类型。"""
+    assert len(cond.METRICS) == 31
     cats = {m["category"] for m in cond.METRICS.values()}
     assert cats == {"基础信息", "估值", "财务", "技术", "风险过滤"}
     for key, m in cond.METRICS.items():
@@ -65,6 +65,14 @@ def test_metric_registry_kinds():
     assert cond.METRICS["above_ma20"]["kind"] == "kline"
     assert cond.METRICS["pe_pct"]["kind"] == "slow"
     assert cond.METRICS["deduct_growth"]["kind"] == "slow"
+
+
+def test_metric_registry_v5_metrics():
+    """四大组合所需新指标：流通市值 / 上市满2年 / 近20日日均成交额 / 近20日波动率。"""
+    assert cond.METRICS["float_mcap_yi"]["kind"] == "row"
+    assert cond.METRICS["listed_2y"]["kind"] == "slow"
+    assert cond.METRICS["avg_amount20_yi"]["kind"] == "kline"
+    assert cond.METRICS["vol20"]["kind"] == "kline"
 
 
 # ---- 行指标取值（含派生口径） ----
@@ -320,20 +328,130 @@ def test_backtest_rule_stop_loss_caps_loss():
 # ---- 内置模板 ----
 
 def test_presets_valid_and_runnable():
-    """3 个模板都是合法规则，且能在候选池行上直接跑。"""
-    assert len(cond.PRESETS) == 3
+    """4 个组合都是合法规则，且能在候选池行上直接跑。"""
+    assert len(cond.PRESETS) == 4
+    assert [p["key"] for p in cond.PRESETS] == ["roe_pe", "roe_pb", "small_quality", "low_vol"]
     for p in cond.PRESETS:
         assert cond.validate_rule(p["rule"]) == [], p["name"]
         out = cond.screen(_rows_three(), p["rule"])
         assert "count" in out and "items" in out
 
 
-def test_preset_trend_is_fully_kline():
-    """趋势突破模板纯 K线条件 → 可回测；低估值/质量成长不可回测（诚实声明）。"""
+def test_preset_all_fundamental_not_backtestable():
+    """四个组合都含财务/估值条件 → 均不可回测（诚实声明）；历史验证同门拒绝。"""
+    for p in cond.PRESETS:
+        ok, why = cond.rule_backtestable(p["rule"])
+        assert not ok and "泄漏" in why, p["key"]
+
+
+def test_preset_roe_pe_shape():
+    """组合1 高ROE+低PE：ROE均值门槛定PE上限、净利同比为正、剔周期行业、上市满2年。"""
     by_key = {p["key"]: p for p in cond.PRESETS}
-    assert cond.rule_backtestable(by_key["trend"]["rule"])[0]
-    assert not cond.rule_backtestable(by_key["value"]["rule"])[0]
-    assert not cond.rule_backtestable(by_key["quality"]["rule"])[0]
+    rule = by_key["roe_pe"]["rule"]
+    metrics = {c["metric"] for c in rule["conditions"]}
+    assert {"roe_mean3", "pe_ttm", "growth", "listed_2y"} <= metrics
+    excl = [c for c in rule["conditions"] if c.get("negate")]
+    assert {c["metric"] for c in excl} == {"industry"}
+    # 关键词必须与东财「所处行业」实际取值命中（v5 live 验证）：申万三级名，
+    # 有色=工业金属/能源金属/贵金属/小金属/金属新材料，钢铁=普钢/特钢/冶钢原料
+    kws = {c["value"] for c in excl}
+    assert {"煤炭", "工业金属", "能源金属", "贵金属", "小金属", "金属新材料",
+            "普钢", "特钢", "冶钢原料"} <= kws
+    pe = next(c for c in rule["conditions"] if c["metric"] == "pe_ttm")
+    assert pe["op"] == "between" and pe["min"] == 0
+
+
+def test_preset_exclude_keywords_match_real_industries():
+    """剔除关键词逐个对 v5 行业实际取值核对——「有色」「钢铁」在东财列里零命中，禁止回潮。"""
+    real = {"煤炭开采", "工业金属", "能源金属", "贵金属", "小金属", "金属新材料",
+            "普钢", "特钢Ⅱ", "冶钢原料", "银行Ⅱ", "保险Ⅱ", "证券Ⅱ",
+            "房地产开发", "房地产服务", "白色家电", "非金属材料Ⅱ"}
+    excl_all = set()
+    for p in cond.PRESETS:
+        excl_all |= {c["value"] for c in p["rule"]["conditions"]
+                     if c.get("negate") and c["metric"] == "industry"}
+    for kw in excl_all:
+        assert any(kw in v for v in real), f"剔除关键词「{kw}」在任何真实行业上都零命中"
+
+
+def test_preset_roe_pb_shape():
+    """组合2 高ROE低PB：ROE>12、0<PB<2、净利同比为正、负债率<60、剔金融地产。"""
+    by_key = {p["key"]: p for p in cond.PRESETS}
+    rule = by_key["roe_pb"]["rule"]
+    conds = {(c["metric"], c.get("negate", False)): c for c in rule["conditions"]}
+    assert conds[("roe", False)]["value"] == 12
+    pb = conds[("pb", False)]
+    assert pb["op"] == "between" and pb["min"] == 0 and pb["max"] == 2
+    assert conds[("debt_ratio", False)]["value"] == 60
+    assert ("industry", True) in conds  # 剔除金融地产
+
+
+def test_preset_small_quality_shape():
+    """组合3 小市值+质量：流通市值20-80亿、日均成交额>0.3亿、0<PE<40、ROE>5、负债率<70。"""
+    by_key = {p["key"]: p for p in cond.PRESETS}
+    rule = by_key["small_quality"]["rule"]
+    conds = {c["metric"]: c for c in rule["conditions"]}
+    assert conds["float_mcap_yi"]["op"] == "between"
+    assert conds["float_mcap_yi"]["min"] == 20 and conds["float_mcap_yi"]["max"] == 80
+    assert conds["avg_amount20_yi"]["value"] == 0.3
+    assert conds["pe_ttm"]["min"] == 0 and conds["pe_ttm"]["max"] == 40
+    assert conds["roe"]["value"] == 5
+    assert conds["debt_ratio"]["value"] == 70
+    assert "listed_2y" in conds
+
+
+def test_preset_low_vol_shape():
+    """组合4 防御低波：0<PE<15、0<PB<1.5、负债率<50，按近20日波动率升序取前30%。"""
+    by_key = {p["key"]: p for p in cond.PRESETS}
+    rule = by_key["low_vol"]["rule"]
+    conds = {c["metric"]: c for c in rule["conditions"]}
+    assert conds["pe_ttm"]["min"] == 0 and conds["pe_ttm"]["max"] == 15
+    assert conds["pb"]["min"] == 0 and conds["pb"]["max"] == 1.5
+    assert conds["debt_ratio"]["value"] == 50
+    assert rule["rank"] == {"metric": "vol20", "top_pct": 30, "order": "asc"}
+
+
+# ---- v5 新K线指标：近20日日均成交额 / 近20日波动率 ----
+
+def test_kline_metrics_avg_amount20_and_vol20():
+    closes = [100 * (1 + (0.01 if i % 2 else -0.01)) for i in range(60)]
+    amounts = [1e8] * 40 + [2e8] * 20
+    m = cond.compute_kline_metrics(_kline(closes, amounts=amounts))
+    assert m["avg_amount20_yi"] == pytest.approx(2.0)  # 近20日全是 2e8 → 2 亿
+    rets = [closes[i] / closes[i - 1] - 1 for i in range(len(closes) - 19, len(closes))]
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+    assert m["vol20"] == pytest.approx(math.sqrt(var) * 100, abs=0.01)
+
+
+def test_kline_metrics_avg_amount20_and_vol20_missing():
+    m = cond.compute_kline_metrics(_kline([10 + i for i in range(15)]))  # <20/21 根
+    assert m["avg_amount20_yi"] is None
+    assert m["vol20"] is None
+    m2 = cond.compute_kline_metrics(_kline([10 + i for i in range(60)]))  # 无 amount 列
+    assert m2["avg_amount20_yi"] is None
+    assert m2["vol20"] is not None  # 波动率只依赖收盘价
+
+
+# ---- v5 新慢指标：上市满2年（K线根数推断） ----
+
+def test_listed_2y_cached(monkeypatch, tmp_path):
+    monkeypatch.setattr(cond, "_stock_kline",
+                        lambda code, days, cache_dir=None: _kline([10] * days))
+    out = cond.listed_2y_cached(["600001", "600002"], str(tmp_path))
+    assert out["600001"] == 1  # 550 根 ≥ 480 → 满2年
+    monkeypatch.setattr(cond, "_stock_kline",
+                        lambda code, days, cache_dir=None: _kline([10] * 300))
+    out = cond.listed_2y_cached(["600003"], str(tmp_path))
+    assert out["600003"] == 0  # 300 根 < 480 → 上市不满2年
+
+    def _boom(code, days, cache_dir=None):
+        raise RuntimeError("net down")
+
+    monkeypatch.setattr(cond, "_stock_kline", _boom)
+    out = cond.listed_2y_cached(["600009"], str(tmp_path))
+    assert out["600009"] is None  # 拉不到 → 缺失，不误判
+    assert any("listed2y_" in f.name for f in tmp_path.iterdir())  # 按天缓存落盘
 
 
 # ---- 编排：run_screen（两段式补数） ----
@@ -379,6 +497,24 @@ def test_run_screen_slow_metric_second_pass(monkeypatch, tmp_path):
     out = cond.run_screen(rule, str(tmp_path))
     assert out["count"] == 1 and out["items"][0]["code"] == "600001"
     assert out["slow_fetched"] >= 2  # 甲丙（PE达标者）都补了分位
+
+
+def test_run_screen_listed_2y_second_pass(monkeypatch, tmp_path):
+    """上市满2年（慢指标）与其他条件同走两段式：只给 pending 行补数。"""
+    monkeypatch.setattr(cond, "rows_cached", lambda cache_dir, refresh=False: _rows_three())
+    monkeypatch.setattr(cond, "market_guard", lambda cache_dir: _GUARD)
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cond, "listed_2y_cached",
+                        lambda codes, cache_dir: (seen.append(list(codes)), {c: 1 for c in codes})[1])
+    rule = {
+        "conditions": [
+            {"metric": "pe_ttm", "op": "between", "min": 0, "max": 20},
+            {"metric": "listed_2y", "op": "eq", "value": 1},
+        ],
+    }
+    out = cond.run_screen(rule, str(tmp_path))
+    assert out["slow_fetched"] == 2  # 只补 PE 达标的甲丙，不补贵的乙
+    assert out["count"] == 2
 
 
 def test_run_screen_invalid_rule_raises(monkeypatch, tmp_path):

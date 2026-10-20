@@ -39,7 +39,7 @@ def _num(v) -> float | None:
         return None
 
 
-# ---- 指标注册表（v1：27 个，全部带口径说明） ----
+# ---- 指标注册表（v2：31 个，全部带口径说明） ----
 # kind: row=候选池行直取 / kline=逐股K线计算 / slow=逐股慢速数据源（按天缓存）
 
 _NUM_OPS = [">", ">=", "<", "<=", "between"]
@@ -57,6 +57,7 @@ METRICS: dict[str, dict] = {
     "price": _m("现价", "基础信息", "腾讯/东财实时报价（元）", "row", _NUM_OPS, "元"),
     "mcap_yi": _m("总市值", "基础信息", "腾讯报价 f45 总市值", "row", _NUM_OPS, "亿"),
     "industry": _m("所属行业", "基础信息", "东财业绩报表「所处行业」列", "row", _TEXT_OPS),
+    "float_mcap_yi": _m("流通市值", "基础信息", "腾讯报价 f44 流通市值（区别于总市值）", "row", _NUM_OPS, "亿"),
     # 估值
     "pe_ttm": _m("市盈率PE(TTM)", "估值", "滚动市盈率；亏损为负值——筛便宜股应配合 min=0 排除亏损",
                  "row", _NUM_OPS),
@@ -87,11 +88,17 @@ METRICS: dict[str, dict] = {
     "vol_ratio": _m("量比", "技术", "今日成交量/前5日均量", "kline", _NUM_OPS),
     "new_high60": _m("创60日新高", "技术", "收盘 ≥ 前60根最高收盘（不含当日）", "kline", _BOOL_OPS),
     "amount_yi": _m("当日成交额(K线)", "技术", "K线成交额（亿元）；回测可用的流动性口径", "kline", _NUM_OPS, "亿"),
+    "avg_amount20_yi": _m("近20日日均成交额", "技术", "K线近20根成交额均值（亿元）；比单日成交额更能代表可交易性",
+                          "kline", _NUM_OPS, "亿"),
     # 风险过滤
     "turnover_wan": _m("当日成交额", "风险过滤", "腾讯报价 f37（万元）；≥3000万 为主流流动性门槛",
                        "row", _NUM_OPS, "万"),
     "debt_ratio": _m("资产负债率", "风险过滤", "东财资产负债表（最新披露期）", "row", _NUM_OPS, "%"),
     "profit_yi": _m("净利润(最新年报)", "风险过滤", "东财业绩报表 净利润；配 >0 排除亏损股", "row", _NUM_OPS, "亿"),
+    "vol20": _m("近20日波动率", "风险过滤", "近20根日收益率样本标准差（%，未年化）；越低越平稳，防御组合排序用",
+                "kline", _NUM_OPS, "%"),
+    "listed_2y": _m("上市满2年", "风险过滤", "K线≥480根（约2年交易日）推断，逐股慢速两段补数；1=满，0=次新",
+                    "slow", _BOOL_OPS),
 }
 
 METRIC_CATEGORIES = ["基础信息", "估值", "财务", "技术", "风险过滤"]
@@ -317,7 +324,7 @@ def ma_angle_deg(ma: list[float], lookback: int = 5) -> float:
 
 
 _KLINE_KEYS = ["above_ma20", "ma20_angle", "ret20", "ret60", "ret120",
-               "vol_ratio", "new_high60", "amount_yi"]
+               "vol_ratio", "new_high60", "amount_yi", "avg_amount20_yi", "vol20"]
 
 
 def compute_kline_metrics(df: pd.DataFrame) -> dict:
@@ -340,6 +347,15 @@ def compute_kline_metrics(df: pd.DataFrame) -> dict:
         out["new_high60"] = 1.0 if closes[-1] >= max(closes[-61:-1]) else 0.0
     if n >= 121:
         out["ret120"] = round((closes[-1] / closes[-121] - 1) * 100, 2)
+    if "amount" in df.columns and n >= 20:
+        amts = [_num(a) for a in df["amount"].iloc[-20:]]
+        if all(a is not None for a in amts):
+            out["avg_amount20_yi"] = round(sum(amts) / len(amts) / 1e8, 3)
+    if n >= 21:
+        rets = [closes[i] / closes[i - 1] - 1 for i in range(n - 20, n)]
+        mean = sum(rets) / len(rets)
+        var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+        out["vol20"] = round(var ** 0.5 * 100, 2)
     if "amount" in df.columns:
         amt = _num(df["amount"].iloc[-1])
         out["amount_yi"] = round(amt / 1e8, 3) if amt is not None else None
@@ -476,54 +492,91 @@ def backtest_rule(rule: dict, klines: dict[str, pd.DataFrame],
     }
 
 
-# ---- 内置模板（现成方案；阈值是演示参数，不是买卖建议） ----
+# ---- 内置组合（现成方案；阈值为公开回测复盘整理，不是买卖建议） ----
+# ST 与北交所已在候选池层面全池剔除（screener.build_rows）。
 
 PRESETS = [
     {
-        "key": "value",
-        "name": "低估值",
+        "key": "roe_pe",
+        "name": "高ROE+低PE",
+        "desc": "近3年ROE均值>20%，PE上限取该ROE均值（默认20），净利同比>0，剔强周期，"
+                "上市满2年。公开回测（单券商，约至2019年）：等权年初调仓十年净值+246% vs 沪深300 +66%，"
+                "超额主要来自消费类——周期股高ROE+低PE可能是景气见顶信号。建议每年/每半年调仓一次。",
         "rule": {
             "logic": "all",
             "conditions": [
+                {"metric": "roe_mean3", "op": ">", "value": 20},
                 {"metric": "pe_ttm", "op": "between", "min": 0, "max": 20},
+                {"metric": "growth", "op": ">", "value": 0},
+                {"metric": "listed_2y", "op": "eq", "value": 1},
+                # 关键词与东财「所处行业」实际取值核对过（v5 live 验证 2026-10-20）：
+                # 有色=工业金属/能源金属/贵金属/小金属/金属新材料，钢铁=普钢/特钢Ⅱ/冶钢原料
+                # （不能用「金属」——「非金属材料Ⅱ」含「金属」二字会误伤建材）
+                {"metric": "industry", "op": "contains", "value": "煤炭", "negate": True},
+                {"metric": "industry", "op": "contains", "value": "工业金属", "negate": True},
+                {"metric": "industry", "op": "contains", "value": "能源金属", "negate": True},
+                {"metric": "industry", "op": "contains", "value": "贵金属", "negate": True},
+                {"metric": "industry", "op": "contains", "value": "小金属", "negate": True},
+                {"metric": "industry", "op": "contains", "value": "金属新材料", "negate": True},
+                {"metric": "industry", "op": "contains", "value": "普钢", "negate": True},
+                {"metric": "industry", "op": "contains", "value": "特钢", "negate": True},
+                {"metric": "industry", "op": "contains", "value": "冶钢原料", "negate": True},
+            ],
+            "rank": None,
+        },
+    },
+    {
+        "key": "roe_pb",
+        "name": "高ROE中的低PB",
+        "desc": "ROE>12%，0<PB≤2，净利同比>0，负债率<60%（金融、地产除外）。"
+                "高ROE低PB资产长期占优（券商研判）；风险是当前高ROE未必持续，周期行业易掉价值陷阱。",
+        "rule": {
+            "logic": "all",
+            "conditions": [
+                {"metric": "roe", "op": ">", "value": 12},
+                {"metric": "pb", "op": "between", "min": 0, "max": 2},
+                {"metric": "growth", "op": ">", "value": 0},
+                {"metric": "debt_ratio", "op": "<", "value": 60},
+                {"metric": "industry", "op": "contains", "value": "银行", "negate": True},
+                {"metric": "industry", "op": "contains", "value": "保险", "negate": True},
+                {"metric": "industry", "op": "contains", "value": "证券", "negate": True},
+                {"metric": "industry", "op": "contains", "value": "房地产", "negate": True},
+            ],
+            "rank": None,
+        },
+    },
+    {
+        "key": "small_quality",
+        "name": "小市值+质量过滤",
+        "desc": "流通市值20-80亿，近20日日均成交额>0.3亿（买得进卖得出），0<PE≤40，ROE>5%，"
+                "负债率<70%，上市满2年。小市值是A股长期有效因子；波动最大，务必分散持仓，"
+                "可配合「历史验证」看持有60/120日表现。",
+        "rule": {
+            "logic": "all",
+            "conditions": [
+                {"metric": "float_mcap_yi", "op": "between", "min": 20, "max": 80},
+                {"metric": "avg_amount20_yi", "op": ">", "value": 0.3},
+                {"metric": "pe_ttm", "op": "between", "min": 0, "max": 40},
+                {"metric": "roe", "op": ">", "value": 5},
+                {"metric": "debt_ratio", "op": "<", "value": 70},
+                {"metric": "listed_2y", "op": "eq", "value": 1},
+            ],
+            "rank": None,
+        },
+    },
+    {
+        "key": "low_vol",
+        "name": "防御型(低估值+低波)",
+        "desc": "0<PE≤15，0<PB≤1.5，负债率<50%，近20日波动率最低30%。"
+                "低估值熊市抗跌，估值驱动的牛市（2015/2019）往往跑输；追求回撤小，不追求涨得多。",
+        "rule": {
+            "logic": "all",
+            "conditions": [
+                {"metric": "pe_ttm", "op": "between", "min": 0, "max": 15},
                 {"metric": "pb", "op": "between", "min": 0, "max": 1.5},
-                {"metric": "div_yield", "op": ">=", "value": 2.5},
-                {"metric": "profit_yi", "op": ">", "value": 0},
-                {"metric": "turnover_wan", "op": ">=", "value": 3000},
+                {"metric": "debt_ratio", "op": "<", "value": 50},
             ],
-            "rank": {"metric": "div_yield", "top_pct": 30, "order": "desc"},
-        },
-    },
-    {
-        "key": "quality",
-        "name": "质量与成长",
-        "rule": {
-            "logic": "all",
-            "conditions": [
-                {"metric": "roe", "op": ">=", "value": 10},
-                {"metric": "roe_min3", "op": ">=", "value": 8},
-                {"metric": "revenue_growth", "op": ">=", "value": 10},
-                {"metric": "growth", "op": ">=", "value": 10},
-                {"metric": "ocf_over_profit", "op": ">=", "value": 0.8},
-                {"metric": "debt_ratio", "op": "<=", "value": 60},
-                {"metric": "turnover_wan", "op": ">=", "value": 3000},
-            ],
-            "rank": {"metric": "roe", "top_pct": 30, "order": "desc"},
-        },
-    },
-    {
-        "key": "trend",
-        "name": "趋势突破",
-        "rule": {
-            "logic": "all",
-            "conditions": [
-                {"metric": "above_ma20", "op": "eq", "value": 1},
-                {"metric": "new_high60", "op": "eq", "value": 1},
-                {"metric": "vol_ratio", "op": ">", "value": 1.5},
-                {"metric": "ret60", "op": ">", "value": 0},
-                {"metric": "amount_yi", "op": ">=", "value": 0.3},
-            ],
-            "rank": {"metric": "ma20_angle", "top_pct": 20, "order": "desc"},
+            "rank": {"metric": "vol20", "top_pct": 30, "order": "asc"},
         },
     },
 ]
@@ -617,6 +670,8 @@ def run_screen(rule: dict, cache_dir: str | None, refresh: bool = False,
                 _merge_vals(vals, codes, "pe_pct", pe_percentile_cached(codes, cache_dir))
             if "deduct_growth" in metrics_in_rule:
                 _merge_vals(vals, codes, "deduct_growth", deduct_growth_cached(codes, cache_dir))
+            if "listed_2y" in metrics_in_rule:
+                _merge_vals(vals, codes, "listed_2y", listed_2y_cached(codes, cache_dir))
             evals = eval_rows(rows, rule, vals)
 
     items = _select(evals, rule)
@@ -732,6 +787,21 @@ def pe_percentile_cached(codes: list[str], cache_dir: str | None) -> dict[str, f
 
 def deduct_growth_cached(codes: list[str], cache_dir: str | None) -> dict[str, float | None]:
     return _daily_cached("deduct_growth", codes, cache_dir, _safe_deduct)
+
+
+_LISTED_MIN_BARS = 480  # ≈2年A股交易日；K线根数不足即「上市不满2年」（次新）
+
+
+def _safe_listed_2y(code: str) -> float | None:
+    try:
+        df = _stock_kline(code, 550)  # 550 > 480：拉满即可分辨满/不满2年
+        return 1.0 if len(df) >= _LISTED_MIN_BARS else 0.0
+    except Exception:  # noqa: BLE001 - 拉不到按缺失，不误判
+        return None
+
+
+def listed_2y_cached(codes: list[str], cache_dir: str | None) -> dict[str, float | None]:
+    return _daily_cached("listed2y", codes, cache_dir, _safe_listed_2y)
 
 
 def _daily_cached(prefix: str, codes: list[str], cache_dir: str | None, fn) -> dict:

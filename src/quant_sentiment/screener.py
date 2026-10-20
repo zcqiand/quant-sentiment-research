@@ -3,8 +3,8 @@
 口径（全 A，剔除 ST 与北交所）：财务三表+分红表走东财 datacenter 批量接口
 （整表一次拉取），行情（现价/成交额/PE-TTM/PB/市值）走腾讯 qt.gtimg.cn 批量
 报价（push2his 拉黑期的独立通路）。候选池原始行按 6h TTL 落 JSON 缓存——
-反复刷新不再打数据源。行 schema v4：近5年报 ROE/净利/OCF/投资现金流历史 +
-最新净利/营收增速 + 双期股息率 + 成交额 + 行业，条件选股引擎在 conditions.py。
+反复刷新不再打数据源。行 schema v5：近5年报 ROE/净利/OCF/投资现金流历史 +
+最新净利/营收增速 + 双期股息率 + 成交额 + 行业 + 流通市值，条件选股引擎在 conditions.py。
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def _tencent_code(code: str) -> str | None:
 
 
 def _parse_quote(payload: str) -> dict[str, dict]:
-    """解析 qt.gtimg.cn 响应：f1名称 f3现价 f37成交额(万) f39PE-TTM f45总市值(亿) f46PB。
+    """解析 qt.gtimg.cn 响应：f1名称 f3现价 f37成交额(万) f39PE-TTM f44流通市值(亿) f45总市值(亿) f46PB。
 
     f37 实测口径（浦发 27017=2.7亿/五粮液 91611=9.2亿，与 f35 第三段「价格/量/额」互验）。
     """
@@ -80,6 +80,7 @@ def _parse_quote(payload: str) -> dict[str, dict]:
                 "price": float(fields[3]),
                 "turnover_wan": float(fields[37]),
                 "pe_ttm": float(fields[39]),
+                "float_mcap_yi": float(fields[44]),
                 "mcap_yi": float(fields[45]),
                 "pb": float(fields[46]),
             }
@@ -208,6 +209,7 @@ def build_rows(
                 "pe_ttm": q["pe_ttm"],
                 "pb": q["pb"],
                 "mcap_yi": q["mcap_yi"],
+                "float_mcap_yi": q.get("float_mcap_yi"),
                 "roe": round(roe_hist[annual] or 0, 2),
                 "debt_ratio": debt_map.get(code),
                 "ocf": {p: round(v, 2) for p, v in ocf_hist.items()},
@@ -248,11 +250,11 @@ def fetch_rows() -> list[dict]:
 
 
 def rows_cached(cache_dir: str | None, refresh: bool = False) -> list[dict]:
-    """候选池行按天缓存（v4 schema：+revenue_growth/+industry，TTL 6h）；refresh=True 或无缓存时在线拉取。"""
+    """候选池行按天缓存（v5 schema：+float_mcap_yi 流通市值，TTL 6h）；refresh=True 或无缓存时在线拉取。"""
     if cache_dir:
         path = Path(cache_dir)
         path.mkdir(parents=True, exist_ok=True)
-        cache_file = path / f"screen_rows_v4_{date.today().isoformat()}.json"
+        cache_file = path / f"screen_rows_v5_{date.today().isoformat()}.json"
         if not refresh and cache_file.exists():
             age = time.time() - cache_file.stat().st_mtime
             if age < _ROWS_TTL_SECONDS:

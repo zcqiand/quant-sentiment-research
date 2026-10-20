@@ -39,9 +39,9 @@ def _xjll():
 
 def _quotes():
     return {
-        "600001": {"name": "甲", "price": 10.0, "turnover_wan": 20000.0, "pe_ttm": 15.0, "pb": 1.5, "mcap_yi": 200.0},
-        "600002": {"name": "乙", "price": 8.0, "turnover_wan": 15000.0, "pe_ttm": 12.0, "pb": 1.0, "mcap_yi": 160.0},
-        "600003": {"name": "ST垃圾", "price": 2.0, "turnover_wan": 5000.0, "pe_ttm": -8.0, "pb": 0.5, "mcap_yi": 20.0},
+        "600001": {"name": "甲", "price": 10.0, "turnover_wan": 20000.0, "pe_ttm": 15.0, "pb": 1.5, "mcap_yi": 200.0, "float_mcap_yi": 150.0},
+        "600002": {"name": "乙", "price": 8.0, "turnover_wan": 15000.0, "pe_ttm": 12.0, "pb": 1.0, "mcap_yi": 160.0, "float_mcap_yi": 120.0},
+        "600003": {"name": "ST垃圾", "price": 2.0, "turnover_wan": 5000.0, "pe_ttm": -8.0, "pb": 0.5, "mcap_yi": 20.0, "float_mcap_yi": 15.0},
     }
 
 
@@ -63,17 +63,19 @@ def test_build_rows_v4_schema():
     assert r["debt_ratio"] == 40.0
     assert r["revenue_growth"] == 12.0  # v4 新列：营收同比（成长类条件用）
     assert r["industry"] == "银行"  # v4 新列：行业（过滤/展示用）
+    assert r["float_mcap_yi"] == 150.0  # v5 新列：流通市值（小市值组合用）
     assert rows[1]["revenue_growth"] == 30.0
     assert rows[1]["industry"] == "白酒"
+    assert rows[1]["float_mcap_yi"] == 120.0
 
 
-def test_rows_cached_v4_filename(tmp_path, monkeypatch):
-    """schema v4 缓存文件名升版——旧 v3 缓存不串数据。"""
+def test_rows_cached_v5_filename(tmp_path, monkeypatch):
+    """schema v5 缓存文件名升版——旧 v4 缓存不串数据。"""
     monkeypatch.setattr(scr, "fetch_rows", lambda: [{"code": "600001"}])
     rows = scr.rows_cached(str(tmp_path), refresh=False)
     assert rows == [{"code": "600001"}]
     files = list(tmp_path.iterdir())
-    assert len(files) == 1 and "screen_rows_v4_" in files[0].name
+    assert len(files) == 1 and "screen_rows_v5_" in files[0].name
 
 
 def test_build_rows_drops_incomplete_cashflow():
@@ -98,7 +100,8 @@ def test_parse_quote_fields():
     assert out["600000"]["price"] == 9.78
     assert out["600000"]["turnover_wan"] == 27017.0  # f37 成交额(万)
     assert out["600000"]["pe_ttm"] == 6.36
-    assert out["600000"]["mcap_yi"] == 3257.31
+    assert out["600000"]["mcap_yi"] == 3257.31  # f45 总市值
+    assert out["600000"]["float_mcap_yi"] == 3257.31  # f44 流通市值
     assert out["600000"]["pb"] == 0.43
     assert "000858" not in out  # 字段不足的行丢弃
 
