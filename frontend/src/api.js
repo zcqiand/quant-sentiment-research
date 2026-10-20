@@ -22,6 +22,8 @@ export const api = {
   presets: () => req('/api/presets'),
   screen: (rule) => req('/api/screen', { method: 'POST', body: JSON.stringify(rule) }),
   backtest: (rule) => req('/api/backtest', { method: 'POST', body: JSON.stringify(rule) }),
+  histScreen: (rule, asof, kline_limit = 300) =>
+    req('/api/hist_screen', { method: 'POST', body: JSON.stringify({ rule, asof, kline_limit }) }),
   rules: () => req('/api/rules'),
   saveRule: (name, rule) =>
     req('/api/rules', { method: 'POST', body: JSON.stringify({ name, rule }) }),

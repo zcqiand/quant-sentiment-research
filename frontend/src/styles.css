@@ -163,4 +163,32 @@ input {
 .cond-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
 .save-name { width: 180px; }
 .reasons { color: var(--muted); font-size: 12px; max-width: 380px; }
+.editor-panel { border-color: var(--accent); margin: 10px 0 16px; }
+.flex-sp { flex: 1; }
+
+/* 清单页（整屏） + 详情页顶栏 */
+.plan-col-head { display: flex; align-items: center; justify-content: space-between; margin: 14px 0 12px; }
+.plan-col-head h3 { font-size: 16px; }
+.plan-list { display: flex; flex-direction: column; gap: 12px; }
+.plan-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 16px; cursor: pointer;
+}
+.plan-card:hover { border-color: #3a4552; }
+.plan-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.plan-head b { font-size: 15px; }
+.plan-conds { margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.9; }
+.plan-conds .excl { color: var(--up); }
+.plan-conds .sep { color: var(--border); }
+.detail-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 14px 0 4px;
+}
+.detail-bar h3 { font-size: 17px; }
+
+/* 历史选股表现分析（功能A） */
+.hist-panel { margin-top: 16px; }
+.hist-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
+.hist-bar input[type="date"] { width: 160px; }
+.hist-notes { color: var(--muted); font-size: 12px; margin: 10px 0 0; padding-left: 18px; }
 

@@ -48,10 +48,11 @@ python scripts/run_api.py               # 起后端 → GET /api/presets → POS
 quant-sentiment-research/
 ├── src/quant_sentiment/
 │   ├── conditions.py     ← 统一条件引擎（指标注册表/条件求值/组合筛选/K线指标/规则回测/编排）
+│   ├── hist_analysis.py  ← 历史选股表现分析（功能A：point-in-time 筛选 + 20/60/120日收益 vs 基准）
 │   ├── screener.py       ← 全市场候选池构建（财务三表×腾讯报价，行schema v4，6h TTL）
 │   ├── gateway.py        ← K线/股名网关（东财主源+腾讯备援+熔断+TTL缓存，amount透传，离线fixture）
 │   ├── store.py          ← SQLite（watchlist 人工池子 + rules 规则版本）
-│   └── api/app.py        ← FastAPI（health/metrics/presets/screen/backtest/rules/watchlist/stocks）
+│   └── api/app.py        ← FastAPI（health/metrics/presets/screen/backtest/hist_screen/rules/watchlist/stocks）
 ├── frontend/             ← React（条件选股 Screener.jsx / 人工池子 ManualPool.jsx / 个股详情）
 ├── scripts/run_api.py    ← 后端启动
 ├── data/                 ← SQLite + 缓存（gitignore）
@@ -72,6 +73,11 @@ quant-sentiment-research/
   理由=未来数据泄漏）；信号同日成立次日收盘入场、持有20日或-8%止损、持仓期不重叠；
   回放起始下标=规则所需最长回看窗口（_signal_start）；判定=样本≥20 + 夏普>1.0 +
   胜率盈亏比组合（>60%需≥1.5 / 50-60%需≥1.8 / 40-50%需≥2.5）。
+- **历史选股表现分析（功能A，hist_analysis.py + POST /api/hist_screen）**：选历史日期，
+  K线截至该日做 point-in-time 筛选（前缀K线算指标，_signal_start 回看窗不足按缺失），
+  统计入选股持有 20/60/120 交易日收益率 vs 上证基准（同口径次日收盘入场）；
+  同样仅纯K线规则、asof 必须早于今天；幸存者偏差/数据缺失/期限不足/no_entry
+  显式透出 notes。完整策略回测（资金分配/调仓/成本）= 第二阶段，未做。
 - **两段式补数**：行条件先筛 → 存活者逐股拉K线（成交额前300，并发8）→ 慢指标只补
   「非慢条件已满足、慢条件缺数据」的行 → 终筛。慢指标按天缓存
   （`data/pe_pct_<日期>.json` / `deduct_growth_<日期>.json`）。
