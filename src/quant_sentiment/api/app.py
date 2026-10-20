@@ -3,10 +3,11 @@
 端口约定：api=8610（配套前端 dev=5610，vite proxy /api → 127.0.0.1:8610）。
 
 - GET  /api/health              探活 + 在线/离线
-- GET  /api/metrics             指标目录（27个，五大类，带口径与可用运算符）
-- GET  /api/presets             内置模板（低估值/质量与成长/趋势突破）
+- GET  /api/metrics             指标目录（31个，五大类，带口径与可用运算符）
+- GET  /api/presets             内置组合（高ROE+低PE/高ROE中的低PB/小市值+质量过滤/防御型低波）
 - POST /api/screen              条件选股 {logic, conditions, rank?}
 - POST /api/backtest            规则回测（仅纯K线规则；财务条件 422 防未来数据泄漏）
+- POST /api/hist_screen         历史选股表现分析（功能A：point-in-time 筛选 + 20/60/120日收益 vs 基准）
 - GET/POST/DELETE /api/rules    选股规则保存（同名版本+1，历史版本保留）
 - GET  /api/watchlist           人工池子（watchlist + 报价/候选池快照）
 - POST /api/watchlist           加自选 {symbol, name?, note?}
