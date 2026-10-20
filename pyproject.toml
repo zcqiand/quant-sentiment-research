@@ -1,10 +1,8 @@
 [project]
 name = "quant-sentiment-research"
-version = "2.0.0"
+version = "3.0.0"
 requires-python = ">=3.10"
 dependencies = [
-    "langchain>=0.3",
-    "langgraph>=1.2",
     "pydantic>=2.0",
     "pandas>=2.0",
     "pyarrow>=14.0",

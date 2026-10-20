@@ -1,48 +1,41 @@
-"""SQLite 存储层测试：watchlist / news_scores / research_runs / scans。"""
+"""人工池子存储测试：watchlist 增删查，离线全绿。"""
 
-from quant_sentiment.store import WorkbenchStore
+from quant_sentiment.store import Store
 
 
 def test_watchlist_roundtrip(tmp_path):
-    store = WorkbenchStore(str(tmp_path / "wb.db"))
-    store.upsert_watchlist("600000", "浦发银行")
-    store.upsert_watchlist("000001", "平安银行")
-    rows = store.list_watchlist()
-    assert [r["symbol"] for r in rows] == ["600000", "000001"]
-    assert rows[0]["name"] == "浦发银行"
+    store = Store(str(tmp_path / "t.db"))
+    assert store.list_all() == []
 
-    store.upsert_watchlist("600000", "浦发银行SPDB")  # 更名即 upsert
-    rows = store.list_watchlist()
+    store.upsert("600000", "浦发银行")
+    store.upsert("000858", "五粮液", note="动量候选")
+    rows = store.list_all()
+    assert [r["symbol"] for r in rows] == ["600000", "000858"]
+    assert rows[1]["note"] == "动量候选"
+
+    store.upsert("600000", "浦发银行", note="价值候选")  # upsert 更新
+    rows = store.list_all()
     assert len(rows) == 2
-    assert rows[0]["name"] == "浦发银行SPDB"
+    assert rows[0]["note"] == "价值候选"
 
-    store.remove_watchlist("600000")
-    assert [r["symbol"] for r in store.list_watchlist()] == ["000001"]
-
-
-def test_news_score_put_get(tmp_path):
-    store = WorkbenchStore(str(tmp_path / "wb.db"))
-    assert store.get_news_score("http://x/1") is None
-    store.put_news_score("http://x/1", "600000", "利好", 0.9)
-    hit = store.get_news_score("http://x/1")
-    assert hit == {"label": "利好", "confidence": 0.9}
+    assert store.remove("600000") is True
+    assert store.remove("600000") is False
+    assert [r["symbol"] for r in store.list_all()] == ["000858"]
 
 
-def test_research_runs_latest_per_symbol(tmp_path):
-    store = WorkbenchStore(str(tmp_path / "wb.db"))
-    store.save_run("600000", "2026-10-19T09:00:00", 42.0, {"composite": 42.0})
-    store.save_run("600000", "2026-10-19T09:30:00", 55.0, {"composite": 55.0})
-    store.save_run("000001", "2026-10-19T09:10:00", -10.0, {"composite": -10.0})
+def test_migrate_v2_watchlist_adds_note(tmp_path):
+    """2.x 旧库的 watchlist 没有 note 列——打开时自动补，数据保留。"""
+    import sqlite3
 
-    latest = store.latest_run_per_symbol()
-    assert latest["600000"]["composite"] == 55.0
-    assert latest["000001"]["composite"] == -10.0
+    db = str(tmp_path / "old.db")
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE watchlist (symbol TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', added_at TEXT NOT NULL)")
+    conn.execute("INSERT INTO watchlist VALUES('600000', '浦发银行', '2026-01-01')")
+    conn.commit()
+    conn.close()
 
-
-def test_scan_save_and_latest(tmp_path):
-    store = WorkbenchStore(str(tmp_path / "wb.db"))
-    assert store.latest_scan() is None
-    store.save_scan("2026-10-19T09:00:00", {"results": [], "errors": []})
-    scan = store.latest_scan()
-    assert scan["ts"] == "2026-10-19T09:00:00"
-    assert scan["payload"] == {"results": [], "errors": []}
+    store = Store(db)
+    rows = store.list_all()
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "600000"
+    assert rows[0]["note"] == ""

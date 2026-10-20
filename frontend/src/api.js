@@ -15,15 +15,10 @@ async function req(path, options = {}) {
 export const api = {
   health: () => req('/api/health'),
   watchlist: () => req('/api/watchlist'),
-  addStock: (symbol, name) =>
-    req('/api/watchlist', { method: 'POST', body: JSON.stringify({ symbol, name }) }),
+  addStock: (symbol, name = '', note = '') =>
+    req('/api/watchlist', { method: 'POST', body: JSON.stringify({ symbol, name, note }) }),
   removeStock: (symbol) => req(`/api/watchlist/${symbol}`, { method: 'DELETE' }),
-  scan: () => req('/api/scan', { method: 'POST' }),
-  latestScan: () => req('/api/scan/latest'),
+  strategy: (key, refresh = false) =>
+    req(`/api/strategy/${key}${refresh ? '?refresh=true' : ''}`),
   stockDetail: (symbol) => req(`/api/stocks/${symbol}`),
-  scoreNews: (symbol) => req(`/api/stocks/${symbol}/score-news`, { method: 'POST' }),
-  research: (symbol) => req(`/api/stocks/${symbol}/research`, { method: 'POST' }),
-  backtest: (symbol) => req(`/api/backtest/${symbol}`),
-  screener: (kind, refresh = false) =>
-    req(`/api/screener/${kind}${refresh ? '?refresh=true' : ''}`),
 }

@@ -2,135 +2,60 @@ import React, { useEffect, useState } from 'react'
 import { api } from './api.js'
 import KlineChart from './KlineChart.jsx'
 
-const LABEL_CLASS = { 利好: 'lab-good', 利空: 'lab-bad', 中性: 'lab-neutral' }
-
+// 个股极简详情：K线 + 交易计划 + 人工核查清单。只服务买卖决策，不做舆情。
 export default function StockDetail({ symbol, onBack }) {
-  const [detail, setDetail] = useState(null)
-  const [err, setErr] = useState(null)
-  const [researching, setResearching] = useState(false)
-  const [scoring, setScoring] = useState(false)
+  const [data, setData] = useState(null)
+  const [msg, setMsg] = useState(null)
 
-  const load = () => {
-    api.stockDetail(symbol).then(setDetail).catch((e) => setErr(e.message))
-  }
-  useEffect(load, [symbol])
+  useEffect(() => {
+    api.stockDetail(symbol)
+      .then(setData)
+      .catch((e) => setMsg({ kind: 'err', text: e.message }))
+  }, [symbol])
 
-  const doScoreNews = async () => {
-    setScoring(true)
-    try {
-      const resp = await api.scoreNews(symbol)
-      setDetail((d) => ({ ...d, news: resp.news }))
-    } catch (e) {
-      setErr(e.message)
-    } finally {
-      setScoring(false)
-    }
-  }
-
-  const doResearch = async () => {
-    setResearching(true)
-    try {
-      await api.research(symbol)
-      load()
-    } catch (e) {
-      setErr(e.message)
-    } finally {
-      setResearching(false)
-    }
-  }
-
-  if (err) {
+  if (msg) {
     return (
-      <div className="detail">
-        <button className="nav" onClick={onBack}>← 返回看板</button>
-        <div className="msg msg-err">{err}</div>
+      <div className="app">
+        <button className="nav" onClick={onBack}>← 返回</button>
+        <div className="msg msg-err" style={{ marginTop: 16 }}>{msg.text}</div>
       </div>
     )
   }
-  if (!detail) return <div className="detail">加载中…</div>
+  if (!data) return <div className="app"><p className="hint">加载中…</p></div>
 
-  const ind = detail.indicators || {}
-  const latest = detail.latest
-  const unscored = (detail.news || []).filter((n) => !n.label).length
+  const plan = data.plan || {}
 
   return (
-    <div className="detail">
+    <div className="app">
       <div className="detail-head">
-        <button className="nav" onClick={onBack}>← 返回看板</button>
-        <h2>{detail.symbol} {detail.name}</h2>
-        <button className="primary" onClick={doResearch} disabled={researching}>
-          {researching ? '研究进行中…' : '🔍 重新研究'}
-        </button>
+        <button className="nav" onClick={onBack}>← 返回</button>
+        <h2>{symbol} {data.name}</h2>
+        <div className="ind-chips">
+          <span className="chip">现价 {data.price?.toFixed(2)}</span>
+          <span className="chip">PE(TTM) {data.pe_ttm?.toFixed(1)}</span>
+          <span className="chip">PB {data.pb?.toFixed(2)}</span>
+          <span className="chip">市值 {data.mcap_yi?.toFixed(0)}亿</span>
+        </div>
       </div>
 
-      <div className="ind-chips">
-        <span className="chip">MA5 {ind.ma5?.toFixed?.(2) ?? '—'}</span>
-        <span className="chip">MA20 {ind.ma20?.toFixed?.(2) ?? '—'}</span>
-        <span className="chip">RSI {ind.rsi?.toFixed?.(1) ?? '—'}</span>
-        <span className="chip">MACD DIF {ind.macd?.dif?.toFixed?.(3) ?? '—'}</span>
-        <span className={`chip ${ind.technical_score > 0 ? 'chip-ok' : 'chip-warn'}`}>
-          技术分 {ind.technical_score?.toFixed?.(2) ?? '—'}
-        </span>
-        {latest && (
-          <span className={`chip ${latest.composite >= 30 ? 'chip-ok' : 'chip-warn'}`}>
-            合成分 {latest.composite > 0 ? '+' : ''}{latest.composite} · {latest.composite_label}
-          </span>
-        )}
-      </div>
-
-      {detail.kline ? (
-        <KlineChart kline={detail.kline} />
-      ) : (
-        <div className="kline-chart kline-missing">K 线数据暂时不可用（数据源限流中），舆情数据不受影响</div>
-      )}
+      <KlineChart kline={data.kline || []} />
 
       <div className="detail-grid">
-        <section className="panel">
-          <h3>研究简报（最新）</h3>
-          {latest ? (
-            <>
-              <pre className="report">{latest.report}</pre>
-              <h4>证据链</h4>
-              <ul className="evidence">
-                {latest.evidence?.map((e, i) => (
-                  <li key={i}>
-                    <b>{e.claim}</b>
-                    <small>{e.source_text} · {e.source_url} · {e.ts}</small>
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : (
-            <p className="empty">还没有研究快照，点右上「重新研究」</p>
-          )}
-        </section>
-
-        <section className="panel">
-          <h3>
-            新闻舆情（{detail.news.length}）
-            {unscored > 0 && (
-              <button className="score-btn" onClick={doScoreNews} disabled={scoring}>
-                {scoring ? '⚡ AI 打分中…（约十几秒）' : `⚡ AI 情绪打分（${unscored} 条待打分）`}
-              </button>
-            )}
-          </h3>
-          <ul className="news">
-            {detail.news.map((n, i) => (
-              <li key={i}>
-                {n.label ? (
-                  <span className={`lab ${LABEL_CLASS[n.label] || 'lab-neutral'}`}>{n.label}</span>
-                ) : (
-                  <span className="lab lab-unscored">未打分</span>
-                )}
-                <div>
-                  <a href={n.url} target="_blank" rel="noreferrer">{n.title}</a>
-                  <small>{n.ts}{n.label ? ` · 置信度 ${n.confidence}` : ''}</small>
-                </div>
-              </li>
-            ))}
-            {detail.news.length === 0 && <li className="empty">暂无新闻</li>}
+        <div className="panel">
+          <h3>交易计划（纪律先行）</h3>
+          <ul className="plan-list">
+            <li><b>建仓</b>：{plan.position}</li>
+            <li><b>止损</b>：{plan.stop}</li>
+            <li><b>止盈</b>：{plan.take_profit}</li>
+            <li><b>防守</b>：{plan.market_guard}</li>
           </ul>
-        </section>
+        </div>
+        <div className="panel">
+          <h3>人工核查清单（买入前必查）</h3>
+          <ul className="review-list">
+            {(data.manual_review || []).map((t) => <li key={t}>{t}</li>)}
+          </ul>
+        </div>
       </div>
     </div>
   )

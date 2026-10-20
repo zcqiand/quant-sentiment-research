@@ -1,25 +1,17 @@
-"""价值选股器：白马价值 TOP20 / 高股息防守 TOP20。
+"""全市场候选池构建器（机器池子的原料）。
 
-口径（全 A，剔除 ST 与北交所）：
-
-- **白马价值**：0 < PE(TTM) < 20 · ROE(最近披露完整年报·加权) > 15%
-  · 资产负债率(最近中报) < 50% · 连续三个年报经营现金流净额 > 0，按 ROE 降序取 TOP。
-- **高股息防守**：股息率(近三年年报每股股利均值/现价) > 5% · 分红不塌
-  （最新年度每股股利 ≥ 三年均值的 70%，剔除周期顶均值幻觉与一次性特别分红）
-  · PB < 1.5 · PE(TTM) > 0（盈利为正，亏钱派息不是防守）· 现金流充足 =
-  连续三个年报经营现金流净额 > 0（近三年累计为正），按均值股息率降序取 TOP。
-  行内同时给出 `div_yield_latest`（最新年度股息率）供双列对照。
-
-数据源：财务三表+分红表走东财 datacenter 批量接口（整表一次拉取），
-行情（现价/PE-TTM/PB/市值）走腾讯 qt.gtimg.cn 批量报价（push2his 拉黑期的
-独立通路）。候选池原始行按天落 JSON 缓存——盘前多次刷新不再打数据源。
+口径（全 A，剔除 ST 与北交所）：财务三表+分红表走东财 datacenter 批量接口
+（整表一次拉取），行情（现价/成交额/PE-TTM/PB/市值）走腾讯 qt.gtimg.cn 批量
+报价（push2his 拉黑期的独立通路）。候选池原始行按 6h TTL 落 JSON 缓存——
+反复刷新不再打数据源。行 schema v3：近5年报 ROE/净利/OCF/投资现金流历史 +
+最新净利增速 + 双期股息率 + 成交额，因子交叉在 strategies.py。
 """
 
 from __future__ import annotations
 
 import json
 import time
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -28,8 +20,6 @@ _TENCENT_URL = "https://qt.gtimg.cn/q="
 _QUOTE_BATCH = 50
 _ROWS_TTL_SECONDS = 6 * 3600  # 候选池行缓存半日，refresh=True 强制重拉
 
-WHITEHORSE_CALIBER = "0<PE(TTM)<20 · ROE(最近年报加权)>15% · 资产负债率(最近中报)<50% · 连续3年年报经营现金流>0 · 按 ROE 降序"
-DIVIDEND_CALIBER = "股息率(近三年年报每股股利均值/现价)>5% · 最新年度分红≥三年均值70%(剔除分红崩塌/一次性特别分红) · PB<1.5 · PE(TTM)>0 · 连续3年年报经营现金流>0 · 按均值股息率降序"
 
 
 # ---- 报告期 ----
@@ -71,7 +61,10 @@ def _tencent_code(code: str) -> str | None:
 
 
 def _parse_quote(payload: str) -> dict[str, dict]:
-    """解析 qt.gtimg.cn 响应：f1名称 f3现价 f39PE-TTM f45总市值(亿) f46PB。"""
+    """解析 qt.gtimg.cn 响应：f1名称 f3现价 f37成交额(万) f39PE-TTM f45总市值(亿) f46PB。
+
+    f37 实测口径（浦发 27017=2.7亿/五粮液 91611=9.2亿，与 f35 第三段「价格/量/额」互验）。
+    """
     out: dict[str, dict] = {}
     for part in payload.split(";"):
         part = part.strip()
@@ -85,6 +78,7 @@ def _parse_quote(payload: str) -> dict[str, dict]:
             out[code] = {
                 "name": fields[1].replace(" ", ""),
                 "price": float(fields[3]),
+                "turnover_wan": float(fields[37]),
                 "pe_ttm": float(fields[39]),
                 "mcap_yi": float(fields[45]),
                 "pb": float(fields[46]),
@@ -152,6 +146,10 @@ def build_rows(
         p: _col(df, ("经营活动产生的现金流量净额", "经营性现金流-现金流量净额"))
         for p, df in xjll_hist.items()
     }
+    inv_cols = {
+        p: _col(df, ("投资活动产生的现金流量净额", "投资性现金流-现金流量净额"))
+        for p, df in xjll_hist.items()
+    }
     dps_col = _col(fhps_by_period[annual], "现金分红比例")
 
     roe_maps = {p: dict(zip(df["股票代码"], df[roe_col])) for p, df in yjbb_hist.items()}
@@ -164,6 +162,10 @@ def build_rows(
     }
     ocf_maps = {
         p: dict(zip(xjll_hist[p]["股票代码"], xjll_hist[p][ocf_cols[p]]))
+        for p in xjll_hist
+    }
+    inv_maps = {
+        p: dict(zip(xjll_hist[p]["股票代码"], xjll_hist[p][inv_cols[p]]))
         for p in xjll_hist
     }
     dps_maps: dict[str, dict] = {}
@@ -185,6 +187,7 @@ def build_rows(
         if "ST" in q["name"].upper():
             continue
         ocf_hist = {p: _num(ocf_maps.get(p, {}).get(code)) for p in periods}
+        inv_hist = {p: _num(inv_maps.get(p, {}).get(code)) for p in periods}
         profit_hist = {p: _num(profit_maps.get(p, {}).get(code)) for p in periods}
         roe_hist = {p: _num(roe_maps.get(p, {}).get(code)) for p in periods}
         dps = {p: _num(dps_maps.get(p, {}).get(code)) for p in dps_keys}
@@ -197,6 +200,7 @@ def build_rows(
                 "code": code,
                 "name": q["name"],
                 "price": q["price"],
+                "turnover_wan": q.get("turnover_wan"),
                 "pe_ttm": q["pe_ttm"],
                 "pb": q["pb"],
                 "mcap_yi": q["mcap_yi"],
@@ -204,6 +208,7 @@ def build_rows(
                 "debt_ratio": debt_map.get(code),
                 "ocf": {p: round(v, 2) for p, v in ocf_hist.items()},
                 "ocf_hist": {p: round(v, 2) for p, v in ocf_hist.items()},
+                "inv_hist": {p: round(v, 2) for p, v in inv_hist.items() if v is not None},
                 "profit": round(profit_hist[annual] or 0, 2),
                 "profit_hist": {p: round(v, 2) for p, v in profit_hist.items()},
                 "roe_hist": {p: round(v, 2) for p, v in roe_hist.items()},
@@ -237,11 +242,11 @@ def fetch_rows() -> list[dict]:
 
 
 def rows_cached(cache_dir: str | None, refresh: bool = False) -> list[dict]:
-    """候选池行按天缓存（v2 schema，TTL 6h）；refresh=True 或无缓存时在线拉取。"""
+    """候选池行按天缓存（v3 schema：+inv_hist/+turnover_wan，TTL 6h）；refresh=True 或无缓存时在线拉取。"""
     if cache_dir:
         path = Path(cache_dir)
         path.mkdir(parents=True, exist_ok=True)
-        cache_file = path / f"screen_rows_v2_{date.today().isoformat()}.json"
+        cache_file = path / f"screen_rows_v3_{date.today().isoformat()}.json"
         if not refresh and cache_file.exists():
             age = time.time() - cache_file.stat().st_mtime
             if age < _ROWS_TTL_SECONDS:
@@ -252,92 +257,12 @@ def rows_cached(cache_dir: str | None, refresh: bool = False) -> list[dict]:
     return fetch_rows()
 
 
-# ---- 筛选（纯函数）----
-
-def _ocf_recent3_positive(row: dict) -> bool:
-    """连续 3 年（最近 3 个年报）经营现金流净额为正。"""
-    vals = list(row["ocf"].values())[:3]
-    return all(isinstance(v, (int, float)) and v > 0 for v in vals)
-
-
-def screen_white_horse(rows: list[dict], top: int = 20) -> list[dict]:
-    """白马价值 TOP：PE 合理 + 高 ROE + 低负债 + 三年现金流为正，ROE 降序。"""
-    picked = [
-        r
-        for r in rows
-        if r["debt_ratio"] is not None
-        and 0 < r["pe_ttm"] < 20
-        and r["roe"] > 15
-        and r["debt_ratio"] < 50
-        and _ocf_recent3_positive(r)
-        and "ST" not in r["name"].upper()
-    ]
-    picked.sort(key=lambda r: r["roe"], reverse=True)
-    out = []
-    for r in picked[:top]:
-        out.append({**r, "ocf_total": round(sum(r["ocf"].values()), 2)})
-    return out
-
-
-def screen_dividend(rows: list[dict], top: int = 20) -> list[dict]:
-    """高股息防守 TOP：均值股息率>5% + 分红不塌（最新年度 ≥ 均值 70%，防周期顶
-    均值幻觉与一次性特别分红）+ 破净/低PB + 盈利为正 + 连续三年现金流为正。"""
-    # 旧 schema 缓存行没有 div_yield_latest，从 dps 现算回填
-    for r in rows:
-        if "div_yield_latest" not in r and r.get("price"):
-            dps_latest = next(iter(r.get("dps", {}).values()), 0.0)
-            r["div_yield_latest"] = round(float(dps_latest) / r["price"] * 100, 2)
-
-    def _div_not_collapsed(r: dict) -> bool:
-        vals = list(r["dps"].values())[:3]
-        mean_dps = sum(float(v) for v in vals) / 3
-        return mean_dps > 0 and float(vals[0]) >= 0.7 * mean_dps
-
-    picked = [
-        r
-        for r in rows
-        if r["div_yield"] > 5
-        and _div_not_collapsed(r)
-        and 0 < r["pb"] < 1.5
-        and r["pe_ttm"] > 0
-        and _ocf_recent3_positive(r)
-        and "ST" not in r["name"].upper()
-    ]
-    picked.sort(key=lambda r: r["div_yield"], reverse=True)
-    return picked[:top]
-
-
-def run_screen(kind: str, cache_dir: str | None, refresh: bool = False) -> dict:
-    """选股器门面：whitehorse / dividend。返回 {kind, asof, caliber, count, items}。"""
-    if kind not in ("whitehorse", "dividend"):
-        raise ValueError(f"未知选股器：{kind}")
-    rows = rows_cached(cache_dir, refresh)
-    if kind == "whitehorse":
-        items = screen_white_horse(rows)
-        caliber = WHITEHORSE_CALIBER
-    else:
-        items = screen_dividend(rows)
-        caliber = DIVIDEND_CALIBER
-    return {
-        "kind": kind,
-        "asof": datetime.now().isoformat(timespec="seconds"),
-        "universe": len(rows),
-        "caliber": caliber,
-        "count": len(items),
-        "items": items,
-    }
-
-
 __all__ = [
-    "run_screen",
-    "screen_white_horse",
-    "screen_dividend",
     "build_rows",
     "rows_cached",
     "fetch_rows",
     "fetch_quotes",
     "report_periods",
+    "report_hist_periods",
     "period_keys",
-    "WHITEHORSE_CALIBER",
-    "DIVIDEND_CALIBER",
 ]

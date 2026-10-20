@@ -1,28 +1,31 @@
-"""工作台 API 路由：health / watchlist / scan / stock detail / backtest。
+"""个人选股工作台 API：人工池子 / 机器池子，只做选股这一件事。
 
 端口约定：api=8610（配套前端 dev=5610，vite proxy /api → 127.0.0.1:8610）。
+
+- GET  /api/health              探活 + 在线/离线
+- GET  /api/watchlist           人工池子（watchlist + 报价/候选池快照）
+- POST /api/watchlist           加自选 {symbol, name?, note?}
+- DELETE /api/watchlist/{sym}   移出自选
+- GET  /api/strategy/{key}      机器池子（value/momentum：因子交叉+回测+计划）
+- GET  /api/stocks/{symbol}     个股极简详情（K线 + 交易计划 + 人工核查清单）
+
+选股结果仅供研究参考，不构成买卖指令。
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .. import buy_index as buy_index_module
-from .. import screener as screener_module
-from ..gateway import _offline_active, fetch_kline, fetch_news
-from ..backtest import run_backtest
-from ..llm import FakeLLM
-from ..llm_live import AnthropicLLM, OpenAICompatLLM
-from ..workbench import Workbench, _dedupe_news, _news_key
+from .. import strategies as st
+from ..gateway import _offline_active, fetch_kline, fetch_stock_name
+from ..screener import fetch_quotes, rows_cached
+from ..store import Store
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DATA_DIR = _REPO_ROOT / "data"
@@ -37,45 +40,18 @@ _WEB_ORIGINS = [
 class WatchlistItem(BaseModel):
     symbol: str
     name: str = ""
+    note: str = ""
 
 
-def _llm_descriptor(llm) -> dict:
-    if isinstance(llm, FakeLLM):
-        return {"mode": "fake", "model": None}
-    if isinstance(llm, OpenAICompatLLM):
-        return {"mode": "openai-compat", "model": llm.model}
-    if isinstance(llm, AnthropicLLM):
-        return {"mode": "anthropic", "model": llm.model}
-    return {"mode": type(llm).__name__, "model": None}
-
-
-def _default_workbench() -> Workbench:
+def _default_store() -> Store:
     db_path = os.getenv("WORKBENCH_DB_PATH") or str(_DATA_DIR / "workbench.db")
-    # cache_dir 必须给：详情接口的 K 线/新闻在线 TTL 缓存全靠它落盘
-    return Workbench(db_path=db_path, cache_dir=str(_DATA_DIR))
+    return Store(db_path)
 
 
-@lru_cache(maxsize=1)
-def _gold_dir() -> str:
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    return str(_DATA_DIR)
-
-
-def _news_item(item: dict, s: dict | None) -> dict:
-    """新闻 → 响应条目；s 为 None 表示未打分（label/confidence 置 null）。"""
-    return {
-        "title": item.get("title", ""),
-        "content": item.get("content", ""),
-        "url": item.get("url", ""),
-        "ts": item.get("ts", ""),
-        "label": s["label"] if s else None,
-        "confidence": s["confidence"] if s else None,
-    }
-
-
-def create_app(workbench: Workbench | None = None) -> FastAPI:
-    wb = workbench if workbench is not None else _default_workbench()
-    app = FastAPI(title="quant-sentiment-workbench", version="2.0.0")
+def create_app(store: Store | None = None, cache_dir: str | None = None) -> FastAPI:
+    store = store if store is not None else _default_store()
+    cache_dir = cache_dir or str(_DATA_DIR)  # K线/因子缓存的落盘目录，必须给
+    app = FastAPI(title="stock-picker-workbench", version="3.0.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_WEB_ORIGINS,
@@ -83,162 +59,104 @@ def create_app(workbench: Workbench | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    def _fetch_sorted_news(symbol: str) -> list[dict]:
-        """去重 + 发布时间倒序（最新在前，缺时间沉底）的新闻列表。"""
-        news = _dedupe_news(fetch_news(symbol, cache_dir=wb.cache_dir, query=wb.news_query(symbol)))
-        return sorted(news, key=lambda n: str(n.get("ts") or ""), reverse=True)
+    def _pool_rows() -> list[dict]:
+        return rows_cached(cache_dir)
+
+    def _pool_rows_safe() -> list[dict]:
+        try:
+            return _pool_rows()
+        except Exception:  # noqa: BLE001 - 候选池拉不到不阻塞人工池子
+            return []
 
     @app.get("/api/health")
-    def health():
+    def health() -> dict:
         return {
             "ok": True,
-            "llm": _llm_descriptor(wb.llm),
-            "data": {"online": not _offline_active()},
-            "version": app.version,
+            "app": "个人选股工作台",
+            "mode": "offline" if _offline_active() else "online",
         }
 
+    # ---- 人工池子 ----
+
     @app.get("/api/watchlist")
-    def get_watchlist():
-        return wb.list_watchlist()
+    def watchlist() -> dict:
+        items = store.list_all()
+        codes = [i["symbol"] for i in items]
+        quotes: dict = {}
+        if codes:
+            try:
+                quotes = fetch_quotes(codes)
+            except Exception:  # noqa: BLE001
+                quotes = {}
+        pool = {r["code"]: r for r in _pool_rows_safe()}
+        rows = []
+        for it in items:
+            row = {**it}
+            q = quotes.get(it["symbol"])
+            if q:
+                row.update({"price": q["price"], "pe_ttm": q["pe_ttm"], "pb": q["pb"], "mcap_yi": q["mcap_yi"]})
+            p = pool.get(it["symbol"])
+            if p:  # 候选池命中 → 附基础因子快照（不做逐股重请求）
+                row.update({
+                    "roe": p["roe"], "debt_ratio": p["debt_ratio"],
+                    "div_yield": p["div_yield"], "turnover_wan": p.get("turnover_wan"),
+                    "in_pool": True,
+                })
+            else:
+                row.setdefault("in_pool", False)
+            rows.append(row)
+        return {"count": len(rows), "items": rows}
 
     @app.post("/api/watchlist", status_code=201)
-    def add_watchlist(item: WatchlistItem):
+    def add_watch(item: WatchlistItem) -> dict:
         if not _SYMBOL_RE.match(item.symbol):
-            raise HTTPException(status_code=400, detail="股票代码须为 6 位数字")
-        name = wb.add_stock(item.symbol, item.name)
+            raise HTTPException(422, "代码须为6位数字")
+        name = item.name or fetch_stock_name(item.symbol)
+        store.upsert(item.symbol, name, item.note)
         return {"symbol": item.symbol, "name": name}
 
     @app.delete("/api/watchlist/{symbol}", status_code=204)
-    def remove_watchlist(symbol: str):
-        if not wb.remove_stock(symbol):
-            raise HTTPException(status_code=404, detail=f"{symbol} 不在自选列表")
+    def remove_watch(symbol: str) -> None:
+        if not store.remove(symbol):
+            raise HTTPException(404, f"{symbol} 不在人工池子")
 
-    @app.post("/api/scan")
-    def scan():
-        return wb.scan()
+    # ---- 机器池子 ----
 
-    @app.get("/api/scan/latest")
-    def latest_scan():
-        scan_row = wb.store.latest_scan()
-        if scan_row is None:
-            raise HTTPException(status_code=404, detail="还没有扫描记录，先 POST /api/scan")
-        return {"ts": scan_row["ts"], **scan_row["payload"]}
+    @app.get("/api/strategy/{key}")
+    def strategy(key: str, refresh: bool = False) -> dict:
+        try:
+            return st.run_strategy(key, cache_dir, refresh)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - 数据源故障统一 502
+            raise HTTPException(502, f"选股失败：{exc}") from exc
+
+    # ---- 个股详情（极简：K线 + 计划 + 人工核查） ----
 
     @app.get("/api/stocks/{symbol}")
-    def stock_detail(symbol: str):
-        """个股详情：K 线 + 新闻 + **已缓存**的打分标签——不做 LLM 调用，秒开。
-
-        打分由 POST /api/stocks/{symbol}/score-news 按钮显式触发。
-        """
-        kline = None
-        news = []
-        fetch_errors = []
-        fetchers = {
-            "kline": lambda: fetch_kline(symbol, days=60, cache_dir=wb.cache_dir),
-            "news": lambda: _fetch_sorted_news(symbol),
-        }
-        with ThreadPoolExecutor(max_workers=2) as pool:  # 两路互不依赖，并行省一半墙钟
-            futures = {pool.submit(fn): name for name, fn in fetchers.items()}
-            for fut in as_completed(futures):
-                name = futures[fut]
-                try:
-                    result = fut.result()
-                except Exception as exc:  # noqa: BLE001 - 单源降级
-                    fetch_errors.append(f"{name}: {exc}")
-                    continue
-                if name == "news":
-                    news = result
-                else:
-                    kline = result
-        if kline is None and not news:
-            raise HTTPException(status_code=502, detail=f"行情数据不可用：{'；'.join(fetch_errors)}")
-        closes = [float(x) for x in kline["close"].tolist()] if kline is not None else []
-        from ..indicators import ma, macd, rsi, technical_score
-
-        news_out = [_news_item(item, wb.store.get_news_score(_news_key(item))) for item in news]
-        indicators = None
-        if closes:
-            macd_full = macd(closes)
-            indicators = {
-                "ma5": ma(closes, 5)[-1],
-                "ma20": ma(closes, 20)[-1],
-                "rsi": rsi(closes),
-                "macd": {
-                    "dif": macd_full["dif"][-1],
-                    "dea": macd_full["dea"][-1],
-                    "hist": macd_full["hist"][-1],
-                },
-                "technical_score": technical_score(closes),
-            }
-        return {
-            "symbol": symbol,
-            "name": wb._watchlist_name(symbol),
-            "kline": kline.to_dict(orient="records") if kline is not None else None,
-            "indicators": indicators,
-            "news": news_out,
-            "latest": wb.store.latest_run_per_symbol().get(symbol),
-        }
-
-    @app.post("/api/stocks/{symbol}/score-news")
-    def score_news(symbol: str):
-        """按钮触发：并行给未打分新闻跑 LLM（已打分的走缓存零消费），返回全量标签。"""
+    def stock_detail(symbol: str) -> dict:
+        if not _SYMBOL_RE.match(symbol):
+            raise HTTPException(422, "代码须为6位数字")
         try:
-            news = _fetch_sorted_news(symbol)
-        except Exception as exc:  # noqa: BLE001 - 数据源抖动统一 502
-            raise HTTPException(status_code=502, detail=f"新闻获取失败：{exc}") from exc
-        scored = wb.score_news_batch(news, symbol)
-        return {"symbol": symbol, "news": [_news_item(item, s) for item, s in zip(news, scored)]}
-
-    @app.post("/api/stocks/{symbol}/research")
-    def stock_research(symbol: str):
-        try:
-            return wb.research_snapshot(symbol)
+            quote = fetch_quotes([symbol]).get(symbol)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"研究快照失败：{exc}") from exc
-
-    @app.get("/api/screener/{kind}")
-    def screener(kind: str, refresh: bool = False):
-        """选股器：whitehorse（白马价值·三检决策层）/ dividend（高股息）/ buyindex（买入指数）。"""
-        data_dir = wb.cache_dir or str(_DATA_DIR)
+            raise HTTPException(502, f"行情不可用：{exc}") from exc
+        if quote is None:
+            raise HTTPException(404, f"{symbol} 无行情数据")
         try:
-            if kind == "buyindex":
-                rows = screener_module.rows_cached(data_dir, refresh)
-                return buy_index_module.run_buy_index(rows, data_dir)
-            payload = screener_module.run_screen(kind, data_dir, refresh)
-            if kind == "whitehorse":
-                # 决策层：榜单=初筛池，三检验+陷阱警报给出研究优先级（失败降级回纯榜单）
-                try:
-                    payload["items"] = buy_index_module.decision_enrich(payload["items"], data_dir)
-                    payload["caliber"] += " · 决策层：季报增速>15% + PE五年分位<40% + 站上60日线且向上"
-                except Exception:  # noqa: BLE001 - 决策层故障不废初筛榜单
-                    pass
-            return payload
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001 - 数据源抖动统一 502
-            raise HTTPException(status_code=502, detail=f"选股失败：{exc}") from exc
-
-    @app.get("/api/backtest/{symbol}")
-    def backtest(symbol: str):
-        gold_dir = wb.cache_dir or _gold_dir()
-        gold_path = Path(gold_dir) / f"gold_{symbol}.json"
-        if not gold_path.exists():
-            raise HTTPException(
-                status_code=404,
-                detail=f"缺少金标文件 {gold_path}（格式：{{新闻url或标题: 利好|利空|中性}}）",
-            )
-        gold_labels = json.loads(gold_path.read_text(encoding="utf-8"))
-
-        def strategy(item: dict) -> str:
-            return wb.score_news_cached(item, symbol)["label"]
-
-        result = run_backtest(strategy, symbol, wb.cache_dir, gold_labels)
+            kline = fetch_kline(symbol, days=120, cache_dir=cache_dir)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"K线不可用：{exc}") from exc
         return {
             "symbol": symbol,
-            "precision": result.precision,
-            "recall": result.recall,
-            "samples": result.samples,
-            "gold_count": len(gold_labels),
+            "name": quote["name"],
+            "price": quote["price"],
+            "pe_ttm": quote["pe_ttm"],
+            "pb": quote["pb"],
+            "mcap_yi": quote["mcap_yi"],
+            "kline": kline.to_dict(orient="records"),
+            "plan": st.trade_plan(quote["price"]),
+            "manual_review": st.manual_review_items({"code": symbol, "name": quote["name"]}),
         }
 
     return app

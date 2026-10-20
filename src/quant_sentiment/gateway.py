@@ -5,9 +5,7 @@
 一个离线模式：当 ``_OFFLINE`` 为真、或 akshare 不可导入时，从
 ``cache_dir`` 读取本地 parquet / json fixture。
 
-约定：
-- K 线：``{cache_dir}/kline_{symbol}.parquet``，至少含 ``close`` 列。
-- 新闻：``{cache_dir}/news_{symbol}.json``，``list[{title, content, url, ts?}]``。
+约定：K 线 ``{cache_dir}/kline_{symbol}.parquet``，至少含 ``close`` 列。
 """
 
 from __future__ import annotations
@@ -42,12 +40,6 @@ def _kline_cache_path(cache_dir: str, symbol: str) -> str:
     import os
 
     return os.path.join(cache_dir, f"kline_{symbol}.parquet")
-
-
-def _news_cache_path(cache_dir: str, symbol: str) -> str:
-    import os
-
-    return os.path.join(cache_dir, f"news_{symbol}.json")
 
 
 _TENCENT_EXCHANGE_PREFIX = {"6": "sh", "0": "sz", "3": "sz", "4": "bj", "8": "bj", "9": "sh"}
@@ -85,7 +77,6 @@ _KLINE_OUT_COLS = ["date", "open", "close", "high", "low", "volume"]
 
 # 在线 TTL 缓存：详情页几分钟内反复点同一只不再重发网络请求
 _KLINE_TTL_SECONDS = 300  # K 线 5 分钟（盘中价格会动，不设太长）
-_NEWS_TTL_SECONDS = 600  # 新闻 10 分钟
 
 
 def _standardize_kline(df):
@@ -189,72 +180,6 @@ def fetch_kline(symbol: str, days: int = 30, cache_dir: str | None = None):
     raise RuntimeError(f"K 线双源均失败：{'；'.join(errors)}")
 
 
-def _stock_news_em(symbol: str):
-    """akshare 新闻检索（独立一层便于测试打桩与后续换源）。"""
-    import akshare as ak
-
-    return ak.stock_news_em(symbol=symbol)
-
-
-def fetch_news(
-    symbol: str, cache_dir: str | None = None, query: str | None = None
-) -> list[dict[str, Any]]:
-    """取 ``symbol`` 相关新闻列表。
-
-    - 离线模式：从 ``{cache_dir}/news_{symbol}.json`` 读取。
-    - 在线模式：调用 akshare 搜索新闻——``query`` 给定时用它作检索词
-      （中文股名检索远比 6 位代码准：按代码搜会命中任何含该数字的文章），
-      ``cache_dir`` 给定时写回 json，且 10 分钟内直接读本地缓存
-      （仍按 symbol 存，测试 fixture 不受影响）。
-
-    返回 ``list[dict]``，每项形如 ``{title, content, url, ts?}``。
-    """
-    import os
-
-    if _offline_active():
-        if not cache_dir:
-            raise FileNotFoundError(
-                f"离线模式下需要 cache_dir 来定位 news_{symbol}.json"
-            )
-        path = _news_cache_path(cache_dir, symbol)
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                return json.load(fh)
-        except FileNotFoundError as exc:  # pragma: no cover - 路径已校验
-            raise FileNotFoundError(
-                f"离线新闻 fixture 缺失：{path}；请先在线抓取或补 fixture"
-            ) from exc
-
-    # 在线 TTL 缓存
-    if cache_dir:
-        path = _news_cache_path(cache_dir, symbol)
-        if os.path.exists(path) and time.time() - os.path.getmtime(path) < _NEWS_TTL_SECONDS:
-            with open(path, "r", encoding="utf-8") as fh:
-                return json.load(fh)
-
-    raw = _stock_news_em(query or symbol)
-    # akshare 返回 DataFrame，列名为中文；映射到统一 schema
-    col_map = {"新闻标题": "title", "新闻内容": "content", "新闻链接": "url", "发布时间": "ts"}
-    records: list[dict[str, Any]] = []
-    for _, row in raw.iterrows():
-        item = {col_map.get(c, c): row[c] for c in raw.columns}
-        records.append(
-            {
-                "title": item.get("title", ""),
-                "content": item.get("content", ""),
-                "url": item.get("url", ""),
-                **({"ts": item["ts"]} if "ts" in item else {}),
-            }
-        )
-    if cache_dir:
-        import os
-
-        os.makedirs(cache_dir, exist_ok=True)
-        with open(_news_cache_path(cache_dir, symbol), "w", encoding="utf-8") as fh:
-            json.dump(records, fh, ensure_ascii=False)
-    return records
-
-
 _KLINE_COL_MAP = {
     "日期": "date",
     "开盘": "open",
@@ -265,4 +190,4 @@ _KLINE_COL_MAP = {
 }
 
 
-__all__ = ["set_offline", "fetch_kline", "fetch_news", "fetch_stock_name"]
+__all__ = ["set_offline", "fetch_kline", "fetch_stock_name"]

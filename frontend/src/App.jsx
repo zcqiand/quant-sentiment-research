@@ -1,68 +1,55 @@
 import React, { useEffect, useState } from 'react'
-import { api } from './api.js'
-import Dashboard from './Dashboard.jsx'
+import MachinePool from './MachinePool.jsx'
+import ManualPool from './ManualPool.jsx'
 import StockDetail from './StockDetail.jsx'
-import BacktestPanel from './BacktestPanel.jsx'
-import Screener from './Screener.jsx'
+import { api } from './api.js'
 
 export default function App() {
+  const [tab, setTab] = useState('machine')
+  const [stock, setStock] = useState(null)
   const [health, setHealth] = useState(null)
-  const [view, setView] = useState('dashboard') // dashboard | screener | detail | backtest
-  const [selected, setSelected] = useState(null)
 
   useEffect(() => {
-    api.health().then(setHealth).catch(() => setHealth({ ok: false }))
+    api.health().then(setHealth).catch(() => setHealth({ mode: 'offline' }))
   }, [])
 
-  const openStock = (symbol) => {
-    setSelected(symbol)
-    setView('detail')
-  }
+  const openStock = (code) => setStock(code)
+  const closeStock = () => setStock(null)
 
-  const llm = health?.llm || {}
+  if (stock) return <StockDetail symbol={stock} onBack={closeStock} />
+
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="logo">📈</span>
+          <span className="logo">📊</span>
           <div>
-            <h1>股票个人工作台</h1>
-            <span className="sub">舆情 × 技术面 · 研究参考非投资建议</span>
+            <h1>个人选股工作台</h1>
+            <span className="sub">机器池子筛概率 · 人工池子做决断 · 用历史大数据买概率</span>
           </div>
         </div>
-        <nav>
-          <button className={view === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setView('dashboard')}>
-            盘前看板
-          </button>
-          <button className={view === 'screener' ? 'nav active' : 'nav'} onClick={() => setView('screener')}>
-            选股器
-          </button>
-          <button className={view === 'backtest' ? 'nav active' : 'nav'} onClick={() => setView('backtest')}>
-            金标回测
-          </button>
-        </nav>
         <div className="status">
-          <span className={`chip ${llm.mode === 'fake' ? 'chip-warn' : 'chip-ok'}`}>
-            LLM: {llm.model || llm.mode || '…'}
-          </span>
-          <span className={`chip ${health?.data?.online ? 'chip-ok' : 'chip-warn'}`}>
-            {health?.data?.online ? '实时行情' : '离线数据'}
+          <span className={`chip ${health?.mode === 'online' ? 'chip-ok' : 'chip-warn'}`}>
+            {health ? (health.mode === 'online' ? '数据在线' : '离线/缓存') : '…'}
           </span>
         </div>
       </header>
 
-      <main>
-        {view === 'dashboard' && <Dashboard onOpenStock={openStock} />}
-        {view === 'screener' && <Screener onOpenStock={openStock} />}
-        {view === 'detail' && selected && (
-          <StockDetail symbol={selected} onBack={() => setView('dashboard')} />
-        )}
-        {view === 'backtest' && <BacktestPanel />}
-      </main>
+      <nav className="pool-tabs">
+        <button className={tab === 'machine' ? 'nav active' : 'nav'} onClick={() => setTab('machine')}>
+          机器池子
+        </button>
+        <button className={tab === 'manual' ? 'nav active' : 'nav'} onClick={() => setTab('manual')}>
+          人工池子
+        </button>
+      </nav>
 
-      <footer className="foot">
-        免责声明：本工具仅为个人研究与教学示例，所有输出不构成任何投资建议；买卖决策自负盈亏。
-      </footer>
+      {tab === 'machine' ? <MachinePool onOpenStock={openStock} /> : <ManualPool onOpenStock={openStock} />}
+
+      <p className="foot">
+        选股结果为量化因子筛选与历史回测，仅供研究参考，不构成买卖指令。
+        五步SOP：底层逻辑 → 因子化 → 筛选+人工清洗 → 回测 → 执行与风控。
+      </p>
     </div>
   )
 }

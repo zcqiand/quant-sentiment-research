@@ -1,12 +1,13 @@
 # quant-sentiment-research — 仓库工作约定（供 Claude Code）
 
-独立项目（不受 suite 门禁）：股票个人工作台——A 股舆情 + 技术面量化投研（LangGraph）。
+独立项目（不受 suite 门禁）：**个人选股工作台**——A 股选股，简简单单就一件事：把选股做好。
 
 ## 项目定位
 
-**个人自用股票交易工作台**：早上开盘前一键扫描自选股，看舆情+技术面+资金热度合成分排序，
-点进个股看 K 线/新闻情绪/证据链，用金标回测验证情绪判定质量。输出研究关注度排序，
-**不产出买卖指令**（合规免责保留）。
+机器池子（因子交叉筛选 + 策略回测 + 人工清洗清单）+ 人工池子（自选跟踪）。
+核心干货三条：因子交叉运算、策略量化回测、（Phase 3）筹码与资金微观结构。
+产品观：「选股软件不是帮你看现在的，而是帮你用历史大数据买概率的」。
+所有输出为研究参考，**不构成买卖指令**（免责保留）。
 
 ## 铁律
 
@@ -14,15 +15,14 @@
 - **mock-friendly**：`pip install -e ".[dev]" && pytest -q` 必须在无 Key、无 Docker、无网下全绿。
 - **零伪代码**：禁止 `pass` 占位、`TODO` 占位，每段代码必须可运行。
 - **无历史包袱**（2026-10-19 用户拍板）：该改就改，没用的删；不做「只增不改」式的博物馆保留。
-- **舆情打分必走缓存**：新闻打分按（url|title）键落 SQLite，同一新闻只花一次 token。
+- **只做选股**（2026-10-20 用户拍板）：舆情/新闻/LLM/金标回测面已整体移除，别再加回来。
 
 ## 技术栈
 
-- 后端：Python 3.10+ / LangGraph 1.2+ / FastAPI + uvicorn / pydantic v2 / pandas / SQLite(stdlib)
+- 后端：Python 3.10+ / FastAPI + uvicorn / pydantic v2 / pandas / SQLite(stdlib)
 - 前端：React 18 + Vite 5 + ECharts 5（npm 走 registry.npmmirror.com）
-- LLM：MiniMax-M3（OpenAI 兼容端点 `api.minimaxi.com/v1`；Key 从 `MINIMAX_API_KEY` env 读，
-  由本机 `.claude/settings.local.json` 注入）；无 Key 回退 FakeLLM
-- 数据：AkShare 实时（eastmoney 直连；本机代理若对 eastmoney 断流，NO_PROXY 加 `.eastmoney.com`）
+- 数据：AkShare（东财 datacenter + 腾讯 qt + 百度股市通；本机代理若对 eastmoney
+  断流，NO_PROXY 加 `.eastmoney.com,gtimg.cn,baidu.com`）
 
 ## 端口
 
@@ -35,8 +35,8 @@
 ```bash
 pip install -e ".[dev]" && pytest -q     # 后端全量，离线无 Key 全绿
 cd frontend && npm run build             # 前端可构建
-# live 烟测（可选，需 Key+网）：
-python scripts/run_api.py               # 起后端 → 前端/ curl POST /api/scan 验证真实链路
+# live 烟测（需网）：
+python scripts/run_api.py               # 起后端 → GET /api/strategy/value 验证真实链路
 ```
 
 ## 目录结构
@@ -44,45 +44,36 @@ python scripts/run_api.py               # 起后端 → 前端/ curl POST /api/s
 ```text
 quant-sentiment-research/
 ├── src/quant_sentiment/
-│   ├── gateway.py        ← 金融数据网关（标准 OHLCV + 新闻，离线/在线双态）
-│   ├── indicators.py     ← MA/RSI/MACD/技术面合成分（纯函数）
-│   ├── sentiment.py      ← 语义情绪打分（LLM）
-│   ├── graph.py/nodes.py ← LangGraph 多波次审计状态机（库路径）
-│   ├── grounding.py      ← 证据链防幻觉
-│   ├── router.py         ← 模型路由
-│   ├── backtest.py       ← 金标回测（precision/recall）
-│   ├── report.py         ← 研究简报渲染
-│   ├── llm.py/llm_live.py← LLM 工厂（env 装配 + FakeLLM 回退 + <think> 剥离）
-│   ├── store.py          ← SQLite（watchlist/打分缓存/快照/扫描历史）
-│   ├── screener.py       ← 价值选股器（白马价值/高股息防守 TOP20，候选池按天缓存）
-│   ├── buy_index.py      ← 买入指数（五步框架：持续性/杠杆/PEG+分位/现金流/行业）
-│   ├── workbench.py      ← 工作台编排（快照/合成分/一键扫描）
-│   └── api/app.py        ← FastAPI 路由（health/watchlist/scan/stocks/screener/backtest）
-├── frontend/             ← React 交易工作台前端（看板/个股详情/金标回测）
+│   ├── gateway.py        ← K线/股名网关（东财主源+腾讯备援+熔断+TTL缓存，离线fixture）
+│   ├── screener.py       ← 全市场候选池构建（财务三表×腾讯报价，行schema v3，6h TTL）
+│   ├── strategies.py     ← 选股策略引擎（因子交叉/回测/排除项/交易计划/大盘防守）
+│   ├── store.py          ← SQLite 人工池子（watchlist）
+│   └── api/app.py        ← FastAPI（health/watchlist/strategy/stocks）
+├── frontend/             ← React 双池前端（机器池子/人工池子/个股详情）
 ├── scripts/run_api.py    ← 后端启动
-├── data/                 ← SQLite + 金标文件（gitignore）
+├── data/                 ← SQLite + 缓存（gitignore）
 └── tests/
 ```
 
-## 编码约定
+## 编码约定（口径改动须同步此处与前端 hint）
 
-- **合成分口径**（改动须同步前端 hint 文案）：composite = 100×(0.45×舆情 + 0.45×技术 + 0.10×热度)；
-  标签 ≥60 重点关注 / ≥30 关注 / >-30 观望 / >-60 谨慎 / 其余 回避研究。
-- **选股器口径**（改动须同步 screener.CALIBER 常量与前端 hint）：白马价值 =
-  0<PE(TTM)<20 + ROE(最近年报加权)>15% + 负债率(最近中报)<50% + 连续3年年报OCF>0，
-  叠加**决策层**（buy_index.decision_enrich，榜单=初筛池非买入指令）：三检验
-  最新季报净利增速>15% / PE五年分位<40% / 站上60日线且MA60向上 + 四警报
-  （周期顶/后视镜/昙花一现/价值陷阱），按检验通过数重排；高股息防守 = 股息率(近三年年报每股股利均值/现价)>5% + 分红不塌
-  （最新年度每股股利 ≥ 三年均值的 70%，剔除分红崩塌股/一次性特别分红的均值幻觉）+
-  PB<1.5 + PE(TTM)>0 + 连续3年年报OCF>0（最近3个年报），均值股息率降序，
-  行带 div_yield_latest（最新年度股息率）供前端双列对照。候选池行
-  `data/screen_rows_v2_<日期>.json`（近5年报 ROE/净利/OCF 历史 + 增速）
-  按 6h TTL 缓存，东财 datacenter 财务表（push2his 拉黑不受影响）+ 腾讯 qt 批量报价。
-- **买入指数口径**（buy_index.py，改动须同步 WEIGHTS 与前端五维展示）：五维各 0~1
-  权重归一——持续性.25（3~5年ROE均值+最低值，昙花一现压0.2）/ 杠杆.15（负债率）/
-  PEG.15（PE/净利润增速）+ 分位.10（PE近五年分位）/ 现金流.20（OCF/净利润，任一年
-  为负归零）/ 行业.15（EM2016 关键词：强周期.2/中性.6/弱周期1.0）。逐股数据
-  （百度估值历史 + F10 行业）只拉预筛前 60 只：分位按天缓存、行业 30 天缓存。
-- **合规免责**：输出为研究关注度排序，界面与简报保留免责声明，不出现买卖指令。
-- **MiniMax-M3 指纹**：响应内联 `<think>…</think>`，llm_live.strip_think 统一剥离；
-  `MINIMAX_MODEL` 若是 image-01 之类图像模型不能用于文本。
+- **模板A 稳健价值**：近3年报 ROE 全>15 · 扣非净利增速>20（东财 F10 主要指标
+  KCFJCXSYJLR 同比，缺失回退 yjbb 净利润同比并在 growth_source 标注）· 现金流背书
+  （OCF/净利 3年合计>1 且 FCF 代理=经营+投资现金流 3年合计>0）· PE(TTM) 近5年分位<20
+  （百度股市通；原用 PB 指标，百度源 PB 返回 None 不可用，2026-10-20 换 PE）。
+  四因子硬交叉全过才入池；便宜因子先筛，双因子存活(约100只)全量逐股请求、按天缓存。
+- **模板B 动量突破**：收盘>MA20 · MA20 角度>30°（角度=atan(日斜率%×100)，30°≈日涨0.58%）
+  · 创60日新高（前60根不含当日）· 量比>2（今日量/5日均量）· 成交额≥3000万（qt f37 万元）。
+  候选池按成交额取前 250 只逐股拉 K 线（400 根，信号用尾部、回测用全量）。
+- **回测判定**：样本≥20笔 + 夏普>1.0（每笔均值/波动×√12）+ 胜率盈亏比组合
+  （>60%需≥1.5 / 50-60%需≥1.8 / 40-50%需≤40%不过；阈值 _payoff_required）。
+  模板A 回测口径=站上60日线入场持有240日（估值分位无法历史重建，backtest_note 声明）；
+  模板B=四条件成立次日入场持有20日，持仓期不重叠。
+- **排除项**：ST 已在池构建剔除；成交额<3000万=不可交易；质押/减持/预亏/监管
+  数据面未覆盖 → manual_review_items 固定输出人工核查清单（机器池子≠买入清单）。
+- **执行纪律**：trade_plan=30%底仓+30%突破加仓 / -7.5%或破20日线止损（stop_price）/
+  +15%减半+10日线移动止盈 / 大盘破20日线只减不加（market_guard，sh000001 按天缓存）。
+- **缓存体系**：候选池行 v3 6h（`data/screen_rows_v3_<日期>.json`）；K线 parquet 300s；
+  PB分位/扣非增速/大盘防守按天。cache_dir 漏传=静默失效（进程内计时+真发网络请求是指纹），
+  test_api 有 `test_strategy_endpoint_uses_app_cache_dir` 防回归。
+- **免责声明**：界面与 README 保留免责，不出现买卖指令。

@@ -1,18 +1,12 @@
-import json
-
 import pandas as pd
 
-from quant_sentiment.gateway import set_offline, fetch_kline, fetch_news
+from quant_sentiment.gateway import set_offline, fetch_kline
 
 
 def _fixtures(tmp_path):
     pd.DataFrame(
         {"date": ["2026-01-01", "2026-01-02"], "close": [10.0, 10.5]}
     ).to_parquet(tmp_path / "kline_600000.parquet")
-    (tmp_path / "news_600000.json").write_text(
-        json.dumps([{"title": "利好", "content": "业绩超预期", "url": "http://x"}]),
-        encoding="utf-8",
-    )
 
 
 def test_fetch_kline_offline_from_cache(tmp_path):
@@ -21,14 +15,6 @@ def test_fetch_kline_offline_from_cache(tmp_path):
     df = fetch_kline("600000", days=5, cache_dir=str(tmp_path))
     assert len(df) == 2
     assert "close" in df.columns
-
-
-def test_fetch_news_offline_from_cache(tmp_path):
-    _fixtures(tmp_path)
-    set_offline(True)
-    news = fetch_news("600000", cache_dir=str(tmp_path))
-    assert len(news) == 1
-    assert news[0]["title"] == "利好"
 
 
 def test_fetch_stock_name_parses_gbk_response():
@@ -133,34 +119,3 @@ def test_kline_online_ttl_cache(monkeypatch, tmp_path):
     os.utime(path, (old, old))
     gateway.fetch_kline("600000", days=5, cache_dir=str(tmp_path))
     assert len(tx_calls) == 2
-
-
-def test_news_online_ttl_cache(monkeypatch, tmp_path):
-    """新闻在线 TTL 缓存：TTL 内再取直接读本地 json。"""
-    import json as json_mod
-
-    import pandas as pd
-
-    from quant_sentiment import gateway
-
-    em_calls = []
-
-    def fake_news_em(symbol):
-        em_calls.append(symbol)
-        return pd.DataFrame(
-            {
-                "新闻标题": [f"{symbol} 新闻"],
-                "新闻内容": ["内容"],
-                "新闻链接": [f"http://x/{symbol}"],
-                "发布时间": ["2026-01-30 08:00"],
-            }
-        )
-
-    set_offline(False)
-    monkeypatch.setattr(gateway, "_stock_news_em", fake_news_em)
-
-    out1 = gateway.fetch_news("600000", cache_dir=str(tmp_path), query="浦发银行")
-    out2 = gateway.fetch_news("600000", cache_dir=str(tmp_path), query="浦发银行")
-    assert len(em_calls) == 1  # 第二次命中缓存
-    assert out1 == out2
-    assert json_mod.dumps(out1, ensure_ascii=False).find("新闻") > 0
