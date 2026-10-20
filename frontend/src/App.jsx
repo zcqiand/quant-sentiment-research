@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react'
-import MachinePool from './MachinePool.jsx'
+import Screener from './Screener.jsx'
 import ManualPool from './ManualPool.jsx'
 import StockDetail from './StockDetail.jsx'
 import { api } from './api.js'
 
 export default function App() {
-  const [tab, setTab] = useState('machine')
+  const [tab, setTab] = useState('screen')
   const [stock, setStock] = useState(null)
   const [health, setHealth] = useState(null)
 
@@ -25,7 +25,7 @@ export default function App() {
           <span className="logo">📊</span>
           <div>
             <h1>个人选股工作台</h1>
-            <span className="sub">机器池子筛概率 · 人工池子做决断 · 用历史大数据买概率</span>
+            <span className="sub">条件选股 · 历史回测 · 用历史大数据买概率</span>
           </div>
         </div>
         <div className="status">
@@ -36,19 +36,19 @@ export default function App() {
       </header>
 
       <nav className="pool-tabs">
-        <button className={tab === 'machine' ? 'nav active' : 'nav'} onClick={() => setTab('machine')}>
-          机器池子
+        <button className={tab === 'screen' ? 'nav active' : 'nav'} onClick={() => setTab('screen')}>
+          条件选股
         </button>
         <button className={tab === 'manual' ? 'nav active' : 'nav'} onClick={() => setTab('manual')}>
           人工池子
         </button>
       </nav>
 
-      {tab === 'machine' ? <MachinePool onOpenStock={openStock} /> : <ManualPool onOpenStock={openStock} />}
+      {tab === 'screen' ? <Screener onOpenStock={openStock} /> : <ManualPool onOpenStock={openStock} />}
 
       <p className="foot">
-        选股结果为量化因子筛选与历史回测，仅供研究参考，不构成买卖指令。
-        五步SOP：底层逻辑 → 因子化 → 筛选+人工清洗 → 回测 → 执行与风控。
+        选股结果为条件筛选与历史回测，仅供研究参考，不构成买卖指令。
+        三层用法：现成方案 → 自定义条件 → 策略回测；买前过人工清洗清单。
       </p>
     </div>
   )

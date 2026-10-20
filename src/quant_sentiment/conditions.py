@@ -158,6 +158,9 @@ def _describe(c: dict, value) -> str:
     if op == "between":
         return f"{m['name']} {_fmt(value)} ∈ [{_fmt(c.get('min'))}, {_fmt(c.get('max'))}]"
     op_text = {">": ">", ">=": "≥", "<": "<", "<=": "≤", "eq": "=", "contains": "含"}[op]
+    if op == "eq":  # 布尔指标：显示 是/否 而不是 1/0
+        yn = {1: "是", 0: "否"}
+        return f"{m['name']}为{yn.get(float(c.get('value', 1)), c.get('value'))}"
     target = _fmt(c.get("value"))
     unit = m.get("unit") or ""
     return f"{m['name']} {_fmt(value)} {op_text} {target}{unit if unit not in ('%', '亿', '万') else ''}"

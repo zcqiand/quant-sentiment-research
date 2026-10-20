@@ -121,4 +121,46 @@ input {
   .scan-table { display: block; overflow-x: auto; }
 }
 
-/* 买入指数五维分项条 */
+/* 条件选股：预设卡 + 条件构建器 */
+.preset-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; align-items: stretch; }
+.preset-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  background: var(--panel); border: 1px solid var(--border); color: var(--text);
+  padding: 10px 16px; border-radius: 8px; cursor: pointer; text-align: left;
+}
+.preset-card.active { border-color: var(--accent); }
+.preset-card .hint { font-size: 11px; }
+.rule-select {
+  background: var(--panel); border: 1px solid var(--border); color: var(--text);
+  padding: 7px 10px; border-radius: 8px; min-width: 170px;
+}
+
+.cond-panel { margin: 12px 0; }
+.cond-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.cond-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 0; border-bottom: 1px dashed var(--border);
+}
+.cond-metric {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 6px 8px; border-radius: 6px; min-width: 170px;
+}
+.cond-op {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 6px 6px; border-radius: 6px; width: 72px;
+}
+.cond-num {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 6px 8px; border-radius: 6px; width: 96px;
+}
+.cond-negate { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.cond-negate input { width: auto; }
+.cond-del {
+  background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px;
+}
+.cond-del:hover { color: var(--up); }
+.cond-rank { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.cond-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.save-name { width: 180px; }
+.reasons { color: var(--muted); font-size: 12px; max-width: 380px; }
+
