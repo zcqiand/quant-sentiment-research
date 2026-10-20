@@ -1,4 +1,4 @@
-"""候选池构建器测试：行 schema v3 + 腾讯批量报价解析，离线全绿。"""
+"""候选池构建器测试：行 schema v4 + 腾讯批量报价解析，离线全绿。"""
 
 import pandas as pd
 
@@ -16,6 +16,8 @@ def _yjbb():
                 "净资产收益率": [18.0, 25.0],
                 "净利润-净利润": [10.0, 9.0],
                 "净利润-同比增长": [25.0, -5.0],
+                "营业收入-同比增长": [12.0, 30.0],
+                "所处行业": ["银行", "白酒"],
             }
         )
         for p in P3
@@ -43,7 +45,7 @@ def _quotes():
     }
 
 
-def test_build_rows_v3_schema():
+def test_build_rows_v4_schema():
     zcfz = pd.DataFrame({"股票代码": ["600001", "600002"], "资产负债率": [40.0, 35.0]})
     fhps = {
         p: pd.DataFrame({"代码": ["600001", "600002"], "现金分红-现金分红比例": [5.0, 8.0]}) for p in P3
@@ -52,13 +54,26 @@ def test_build_rows_v3_schema():
     codes = [r["code"] for r in rows]
     assert codes == ["600001", "600002"]  # ST 剔除
     r = rows[0]
-    assert r["turnover_wan"] == 20000.0  # v3 新列：成交额（流动性门槛用）
-    assert r["inv_hist"]["20251231"] == -3.0  # v3 新列：投资现金流（FCF 代理用）
+    assert r["turnover_wan"] == 20000.0  # 成交额（流动性门槛用）
+    assert r["inv_hist"]["20251231"] == -3.0  # 投资现金流（FCF 代理用）
     assert r["roe_hist"]["20231231"] == 18.0  # 近5年报 ROE 历史
     assert r["dps"]["20251231"] == 0.5  # 每10股5元 → 每股0.5
     assert r["div_yield"] == 5.0  # 0.5/10
     assert r["growth"] == 25.0
     assert r["debt_ratio"] == 40.0
+    assert r["revenue_growth"] == 12.0  # v4 新列：营收同比（成长类条件用）
+    assert r["industry"] == "银行"  # v4 新列：行业（过滤/展示用）
+    assert rows[1]["revenue_growth"] == 30.0
+    assert rows[1]["industry"] == "白酒"
+
+
+def test_rows_cached_v4_filename(tmp_path, monkeypatch):
+    """schema v4 缓存文件名升版——旧 v3 缓存不串数据。"""
+    monkeypatch.setattr(scr, "fetch_rows", lambda: [{"code": "600001"}])
+    rows = scr.rows_cached(str(tmp_path), refresh=False)
+    assert rows == [{"code": "600001"}]
+    files = list(tmp_path.iterdir())
+    assert len(files) == 1 and "screen_rows_v4_" in files[0].name
 
 
 def test_build_rows_drops_incomplete_cashflow():

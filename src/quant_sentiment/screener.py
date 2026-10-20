@@ -3,8 +3,8 @@
 口径（全 A，剔除 ST 与北交所）：财务三表+分红表走东财 datacenter 批量接口
 （整表一次拉取），行情（现价/成交额/PE-TTM/PB/市值）走腾讯 qt.gtimg.cn 批量
 报价（push2his 拉黑期的独立通路）。候选池原始行按 6h TTL 落 JSON 缓存——
-反复刷新不再打数据源。行 schema v3：近5年报 ROE/净利/OCF/投资现金流历史 +
-最新净利增速 + 双期股息率 + 成交额，因子交叉在 strategies.py。
+反复刷新不再打数据源。行 schema v4：近5年报 ROE/净利/OCF/投资现金流历史 +
+最新净利/营收增速 + 双期股息率 + 成交额 + 行业，条件选股引擎在 conditions.py。
 """
 
 from __future__ import annotations
@@ -155,6 +155,10 @@ def build_rows(
     roe_maps = {p: dict(zip(df["股票代码"], df[roe_col])) for p, df in yjbb_hist.items()}
     profit_maps = {p: dict(zip(df["股票代码"], df[profit_col])) for p, df in yjbb_hist.items()}
     growth_map = dict(zip(latest_yjbb["股票代码"], latest_yjbb[growth_col]))
+    rev_growth_col = next(c for c in latest_yjbb.columns if "营业" in c and "同比增长" in c)
+    rev_growth_map = dict(zip(latest_yjbb["股票代码"], latest_yjbb[rev_growth_col]))
+    industry_col = next(c for c in latest_yjbb.columns if "行业" in c)
+    industry_map = dict(zip(latest_yjbb["股票代码"], latest_yjbb[industry_col]))
     debt_map = {
         str(code): round(float(ratio), 2)
         for code, ratio in zip(zcfz["股票代码"], zcfz[_col(zcfz, "资产负债率")])
@@ -213,6 +217,8 @@ def build_rows(
                 "profit_hist": {p: round(v, 2) for p, v in profit_hist.items()},
                 "roe_hist": {p: round(v, 2) for p, v in roe_hist.items()},
                 "growth": (round(g, 2) if (g := _num(growth_map.get(code))) is not None else None),
+                "revenue_growth": (round(g, 2) if (g := _num(rev_growth_map.get(code))) is not None else None),
+                "industry": (str(industry_map.get(code)) if industry_map.get(code) is not None else None),
                 "dps": {p: round(v, 4) for p, v in dps.items()},
                 "div_yield": div_yield,
                 "div_yield_latest": div_yield_latest,
@@ -242,11 +248,11 @@ def fetch_rows() -> list[dict]:
 
 
 def rows_cached(cache_dir: str | None, refresh: bool = False) -> list[dict]:
-    """候选池行按天缓存（v3 schema：+inv_hist/+turnover_wan，TTL 6h）；refresh=True 或无缓存时在线拉取。"""
+    """候选池行按天缓存（v4 schema：+revenue_growth/+industry，TTL 6h）；refresh=True 或无缓存时在线拉取。"""
     if cache_dir:
         path = Path(cache_dir)
         path.mkdir(parents=True, exist_ok=True)
-        cache_file = path / f"screen_rows_v3_{date.today().isoformat()}.json"
+        cache_file = path / f"screen_rows_v4_{date.today().isoformat()}.json"
         if not refresh and cache_file.exists():
             age = time.time() - cache_file.stat().st_mtime
             if age < _ROWS_TTL_SECONDS:

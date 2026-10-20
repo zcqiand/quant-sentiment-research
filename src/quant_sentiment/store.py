@@ -1,10 +1,11 @@
-"""选股工作台 SQLite 存储层：人工池子（watchlist）。
+"""工作台 SQLite 存储层：人工池子（watchlist）+ 选股规则版本（rules）。
 
 stdlib sqlite3，单文件库；表结构在构造时自动建齐（幂等）。
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from datetime import datetime
@@ -17,11 +18,19 @@ CREATE TABLE IF NOT EXISTS watchlist (
     note     TEXT NOT NULL DEFAULT '',
     added_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rules (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    spec       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(name, version)
+);
 """
 
 
 class Store:
-    """人工池子持久化。个人单机用，单连接 + 写后 commit。"""
+    """人工池子 + 规则版本持久化。个人单机用，单连接 + 写后 commit。"""
 
     def __init__(self, db_path: str) -> None:
         parent = os.path.dirname(db_path)
@@ -54,6 +63,50 @@ class Store:
             "SELECT symbol, name, note, added_at FROM watchlist ORDER BY rowid"
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ---- 选股规则：同名再存 version+1，历史版本行保留（旧回测可追溯） ----
+
+    def save_rule(self, name: str, spec: dict) -> int:
+        """保存规则，返回新版本号（同名从 1 起自增）。"""
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(version), 0) AS v FROM rules WHERE name = ?", (name,)
+        ).fetchone()
+        version = row["v"] + 1
+        self._conn.execute(
+            "INSERT INTO rules(name, version, spec, created_at) VALUES(?, ?, ?, ?)",
+            (name, version, json.dumps(spec, ensure_ascii=False),
+             datetime.now().isoformat(timespec="seconds")),
+        )
+        self._conn.commit()
+        return version
+
+    @staticmethod
+    def _rule_row(r) -> dict[str, Any]:
+        out = dict(r)
+        out["spec"] = json.loads(out["spec"])
+        return out
+
+    def list_rules(self) -> list[dict[str, Any]]:
+        """规则清单：每个名字只出最新版本（历史版本仍在表里）。"""
+        rows = self._conn.execute(
+            "SELECT r.id, r.name, r.version, r.spec, r.created_at FROM rules r "
+            "JOIN (SELECT name, MAX(version) AS v FROM rules GROUP BY name) t "
+            "ON r.name = t.name AND r.version = t.v ORDER BY r.created_at",
+        ).fetchall()
+        return [self._rule_row(r) for r in rows]
+
+    def get_rule(self, name: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT id, name, version, spec, created_at FROM rules "
+            "WHERE name = ? ORDER BY version DESC LIMIT 1", (name,),
+        ).fetchone()
+        return self._rule_row(row) if row else None
+
+    def delete_rule(self, name: str) -> bool:
+        """删除规则的全部版本。"""
+        cur = self._conn.execute("DELETE FROM rules WHERE name = ?", (name,))
+        self._conn.commit()
+        return cur.rowcount > 0
 
 
 # 兼容旧名：watchlist CRUD 语义不变

@@ -74,6 +74,7 @@ def fetch_stock_name(symbol: str, transport=None) -> str:
 
 
 _KLINE_OUT_COLS = ["date", "open", "close", "high", "low", "volume"]
+# amount（成交额）可选：有则透传（条件回测的流动性口径），无则整列缺席
 
 # 在线 TTL 缓存：详情页几分钟内反复点同一只不再重发网络请求
 _KLINE_TTL_SECONDS = 300  # K 线 5 分钟（盘中价格会动，不设太长）
@@ -91,7 +92,8 @@ def _standardize_kline(df):
         df["volume"] = 0
     if "date" not in df.columns:
         df["date"] = [f"d{i + 1}" for i in range(len(df))]
-    return df[_KLINE_OUT_COLS].reset_index(drop=True)
+    cols = _KLINE_OUT_COLS + (["amount"] if "amount" in df.columns else [])
+    return df[cols].reset_index(drop=True)
 
 
 def _fetch_kline_eastmoney(symbol: str, days: int):
@@ -187,6 +189,7 @@ _KLINE_COL_MAP = {
     "最高": "high",
     "最低": "low",
     "成交量": "volume",
+    "成交额": "amount",
 }
 
 

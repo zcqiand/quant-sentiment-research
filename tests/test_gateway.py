@@ -17,6 +17,25 @@ def test_fetch_kline_offline_from_cache(tmp_path):
     assert "close" in df.columns
 
 
+def test_kline_amount_column_passthrough(tmp_path):
+    """成交额列保留为 amount（东财「成交额」/腾讯 amount）——条件回测的流动性口径。"""
+    set_offline(True)
+    pd.DataFrame(
+        {"date": ["2026-01-01", "2026-01-02"], "close": [10.0, 10.5],
+         "成交额": [5e7, 6e7]}
+    ).to_parquet(tmp_path / "kline_600001.parquet")
+    pd.DataFrame(
+        {"date": ["2026-01-01", "2026-01-02"], "close": [10.0, 10.5]}
+    ).to_parquet(tmp_path / "kline_600000.parquet")
+    df = fetch_kline("600001", days=5, cache_dir=str(tmp_path))
+    assert "amount" in df.columns
+    assert df["amount"].iloc[-1] == 6e7
+
+    # 无成交额列（旧缓存/离线 fixture）→ 不产生 amount 列，不报错
+    df2 = fetch_kline("600000", days=5, cache_dir=str(tmp_path))
+    assert "amount" not in df2.columns
+
+
 def test_fetch_stock_name_parses_gbk_response():
     import httpx
 
