@@ -69,3 +69,22 @@ npm run dev                      # http://localhost:5610
 
 本项目所有输出（榜单、回测、计划）均为历史数据统计与研究参考，不构成任何投资建议；
 据此交易风险自负。
+
+## 配套书籍及章节映射
+
+> 同一案例仓后续接入其他书籍时，在此节下新增书籍小节。
+
+### 书一《AI智能体从入门到项目实践》（卷四）
+
+- 书稿定位：xr-know-008，第 29、30、31、32、33、34 章正文代码块挂本仓 `source=` 锚点
+- 配套版本：未冻结 tag（历史绑定，以 registry 登记为准）
+
+| 章 | 章题 | 对应源文件 |
+| :--- | :--- | :--- |
+| 29 | 金融数据网关：行情与舆情的统一入口 | `src/quant_sentiment/gateway.py` |
+| 30 | 语义情绪打分：把新闻变成情绪信号 | `src/quant_sentiment/sentiment.py` |
+| 31 | 多波次投研状态机：把多源信号汇成研究简报 | `src/quant_sentiment/graph.py` + `src/quant_sentiment/nodes.py` + `src/quant_sentiment/state.py` |
+| 32 | 证据链防幻觉：把研究简报锚定在证据上 | `src/quant_sentiment/grounding.py` + `src/quant_sentiment/nodes.py` + `src/quant_sentiment/state.py` |
+| 33 | 多模型路由与成本：按任务复杂度选模型档位 | `src/quant_sentiment/router.py` + `src/quant_sentiment/state.py` + `tests/test_router.py` |
+| 34 | 金标回测评估：用人工金标验证情绪判定质量 | `src/quant_sentiment/backtest.py` + `src/quant_sentiment/report.py` + `tests/test_backtest.py` |
+
