@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "project": "quant-sentiment-research",
+  "current_task": "个人选股工作台（独立仓，不受 suite 门禁）——条件选股引擎 + 历史验证（公告日/披露截止双门控）已交付，2026-10-24 README 章节映射收口",
+  "last_session_at": "2026-10-24",
+  "done": [
+    "2026-06-30 仓首航：AkShare 离线网关 + 情绪打分器 → QuantState/Evidence 证据链 → 多波次审计状态机（technical/fund_flow/sentiment+summarize）→ 多模型路由+研究简报+回测+卷四章节映射；回测形态从预测涨跌二分类器 refact 成 LLM 情绪判定金标评估（859794a..ff1a70f）",
+    "2026-10-19 盘前工作台 v2：FastAPI+React 全链路（5a8eaab）；K线双源备援（东财主+腾讯备援 48f9b7f）；新闻按中文股名检索+去重（07ff4a1）；价值选股器双策略 TOP20+改名股票个人工作台（179569f/bfd8c96）；买入指数五步判断（aac8a6c）；详情提速（新闻打分并行+东财熔断 7089d97）；高股息分红不塌约束（f957dc1）；详情接口 TTL 缓存从未生效修复——默认 Workbench 漏传 cache_dir（43839a1）；白马榜升级决策层（db32e47）",
+    "2026-10-20 v3 大重构（无历史包袱拍板）：a2ed869 feat! 机器池子+人工池子双主项只做选股 → 1c5ae8f 统一条件选股引擎（指标注册表+AND/OR/排除/区间/排名+纯K线规则回测防未来泄漏+规则版本保留）→ eb1444f 条件选股前端（预设卡+条件构建器+入选原因+规则保存+回测面板）→ 4ff810b 内置组合推倒重做 4 模板+候选池行 v5（流通市值）",
+    "2026-10-20 历史验证（功能A）：54601a4 point-in-time 筛选+20/60/120日前瞻收益 → ede0d11 详情页历史验证面板+c363270 面板自动滚动修复 → 36a826b 历史财务横截面快照——公告日/法定披露截止双门控（年报次年4-30/中报8-31），4 组合全部可跑历史验证 → c457f9f 口径同步双门控",
+    "2026-10-24 README 配套书籍及章节映射段补齐（c23518e，sync_case_readme.py，坑 A8 门控）",
+    "2026-10-26 session.json 从 git log 补档（此前工作只存在 git log，用户裁补）"
+  ],
+  "next": [
+    "下一个迭代事项待定（选股引擎/历史验证已闭环；候选方向见 README 未竟项）"
+  ],
+  "open_questions": [],
+  "dont": [
+    "回测/历史验证铁律：含财务/估值条件的规则拒绝纯K线回测——历史横截面快照未接会引入未来数据泄漏，诚实拒绝而非虚高回测",
+    "按天缓存 None 毒化：数据源失败写入的 None 会被当天后续请求当真值复用——缓存写入前必须校验非 None",
+    "行业过滤 contains 关键词=申万三级名，不是二级/一级——改行业条件先对名册",
+    "数据源限流：东财 datacenter 断流先查本机代理 NO_PROXY（.eastmoney.com,gtimg.cn,baidu.com），腾讯 qt 备援已接",
+    "uvicorn Windows proactor accept 崩溃：scripts/run_api.py 已切 SelectorEventLoop，别绕过脚本裸起（memory: uvicorn-windows-proactor-accept-crash）",
+    "舆情/新闻/LLM 面已删别加回（2026-10-20 拍板：只做选股，条件选股是唯一选股形态）"
+  ],
+  "last_gate_passed_at": "2026-10-24（pytest 离线全绿 + frontend build 过，随 README 收口轮）",
+  "active_branch": "master"
+}
