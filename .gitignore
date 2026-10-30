@@ -40,3 +40,6 @@ desktop.ini
 # 抓取产物一律不进 git（kline parquet / news json / 缓存）
 data/*
 !data/.gitkeep
+
+# 可再生件（正式区/临时区纪律：过程件进 _work/，_work 整体不入库；2026-10-24 人裁）
+_work/
